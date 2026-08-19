@@ -1,0 +1,19 @@
+name: test
+on:
+  push:
+    branches: ['**']
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        # La misma versión que compila los releases: un binario que se
+        # actualiza solo no puede depender de qué toolchain había ese día.
+        with: { go-version: '1.23.x', check-latest: false }
+      - run: go test -race ./...
+      - run: go vet ./...
+      # El agente corre sobre todo en Windows y acá no se compila nunca:
+      # vet cruzado para que un `//go:build windows` roto no llegue al release.
+      - run: GOOS=windows GOARCH=amd64 go vet ./...
