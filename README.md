@@ -22,8 +22,9 @@ cada vez que entrás a la computadora.
    **Configuraciones → Impresión → Vincular una computadora**, al lado del
    código. También están en la
    [última versión publicada](https://github.com/eesnaola/manducar-impresion/releases/latest):
-   `manducar-impresion-windows-amd64.exe`, `manducar-impresion-darwin-arm64`,
-   `manducar-impresion-linux-amd64`.
+   `manducar-impresion-windows-amd64.exe`, `manducar-impresion-mac.zip` (en
+   Mac bajá el zip: al descomprimirlo con doble clic queda el programa listo
+   para abrir) y `manducar-impresion-linux-amd64`.
 2. **Abrirlo** con doble clic. Se abre una ventana y el programa te va
    guiando. La primera vez el sistema desconfía —el programa todavía no está
    firmado—: ver [los avisos de la primera vez](#los-avisos-de-la-primera-vez).
