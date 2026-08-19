@@ -1,14 +1,15 @@
 package main
 
 // El asistente es el programa para el que no abre una terminal: baja el
-// archivo, lo abre de un doble clic y contesta dos preguntas. Todo lo que
-// hace de verdad —vincular, instalar— es lo mismo que hacen los comandos:
-// acá sólo se pregunta, se valida lo que la persona escribió y se cuenta en
+// archivo, lo abre de un doble clic y pega el código que le muestra el panel.
+// Todo lo que hace de verdad —vincular, instalar— es lo mismo que hacen los
+// comandos: acá sólo se pregunta el código, se lo valida y se cuenta en
 // castellano qué pasó.
 
 import (
 	"bufio"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -30,12 +31,43 @@ const maxIntentos = 3
 
 // cmdAsistente es el asistente contra la terminal de verdad. Es lo que corre
 // un doble clic y lo que corre `asistente`.
-func cmdAsistente() int { return asistir(os.Stdin, os.Stdout) }
+func cmdAsistente(args []string) int {
+	servidor, err := wizardServer(args)
+	if err != nil {
+		if !errors.Is(err, flag.ErrHelp) {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		return 2
+	}
+	return asistir(os.Stdin, os.Stdout, servidor)
+}
 
-// asistir es el asistente entero, con la entrada y la salida por parámetro:
-// así el test lo maneja con un par de cadenas.
-func asistir(in io.Reader, out io.Writer) int {
-	a := &asistente{in: bufio.NewReader(in), out: out}
+// wizardServer decide contra qué servidor vincula el asistente: el que se le
+// haya dado con --servidor —para probar contra un local de desarrollo—, si no
+// el de la variable MANDUCAR_IMPRESION_SERVIDOR —lo mismo, sin tocar la línea
+// de comandos—, y si no hay ninguno de los dos, el de Manducar. Los códigos
+// valen para toda la plataforma: por eso el asistente ya no pregunta la
+// dirección del local.
+func wizardServer(args []string) (string, error) {
+	fs := flag.NewFlagSet("asistente", flag.ContinueOnError)
+	srv := fs.String("servidor", "", "para pruebas: contra qué servidor vincula el asistente, si no es "+defaultServer)
+	if err := fs.Parse(args); err != nil {
+		return "", err
+	}
+	if *srv != "" {
+		return normalizeServer(*srv)
+	}
+	if env := strings.TrimSpace(os.Getenv(envServidor)); env != "" {
+		return normalizeServer(env)
+	}
+	return defaultServer, nil
+}
+
+// asistir es el asistente entero, con la entrada, la salida y el servidor
+// contra el que vincula por parámetro: así el test lo maneja con un par de
+// cadenas y un httptest.Server.
+func asistir(in io.Reader, out io.Writer, servidor string) int {
+	a := &asistente{in: bufio.NewReader(in), out: out, servidor: servidor}
 	a.presentacion()
 	e := estado()
 	switch {
@@ -57,6 +89,10 @@ func asistir(in io.Reader, out io.Writer) int {
 type asistente struct {
 	in  *bufio.Reader
 	out io.Writer
+	// servidor es contra qué servidor vincula: manduc.ar salvo que se haya
+	// pedido otro con --servidor o con la variable de entorno. La persona no
+	// lo elige: el asistente ya no pregunta la dirección del local.
+	servidor string
 	// fallo: algo no salió y la persona dejó de intentar. Sirve para el
 	// código de salida, que es lo único que puede mirar un script.
 	fallo bool
@@ -181,7 +217,7 @@ func (a *asistente) menu(e estadoInfo) {
 	}
 }
 
-// pasoVincular pregunta el código y la dirección, y vincula. Si algo sale
+// pasoVincular pregunta el código y vincula contra a.servidor. Si algo sale
 // mal, lo cuenta y ofrece empezar de nuevo: el código vence a los diez
 // minutos, así que reintentar es pedirle uno nuevo al panel, no repetir el
 // mismo.
@@ -192,13 +228,8 @@ func (a *asistente) pasoVincular() bool {
 			a.fallo = true
 			return false
 		}
-		server, ok := a.pedirServidor()
-		if !ok {
-			a.fallo = true
-			return false
-		}
 		a.decir("", "Vinculando…")
-		info, err := pair(a.out, server, code, defaultName())
+		info, err := pair(a.out, a.servidor, code, defaultName())
 		if err == nil {
 			a.ultimo = info
 			return true
@@ -215,7 +246,7 @@ func (a *asistente) pasoVincular() bool {
 
 func (a *asistente) pedirCodigo() (string, bool) {
 	for intento := 1; ; intento++ {
-		linea, ok := a.preguntar("Pegá el código de seis dígitos que muestra el panel:")
+		linea, ok := a.preguntar("Pegá el código que muestra el panel:")
 		if !ok {
 			return "", false
 		}
@@ -226,24 +257,6 @@ func (a *asistente) pedirCodigo() (string, bool) {
 		a.decir(enCastellano(err))
 		if intento == maxIntentos {
 			a.decir("El código lo muestra el panel en Configuraciones → Impresión → «Vincular una computadora», y vence a los diez minutos. Abrí este programa de nuevo cuando lo tengas a mano.")
-			return "", false
-		}
-	}
-}
-
-func (a *asistente) pedirServidor() (string, bool) {
-	for intento := 1; ; intento++ {
-		linea, ok := a.preguntar("Dirección de tu local en Manducar (la que ves arriba en el navegador, por ejemplo pizzeria.manduc.ar):")
-		if !ok {
-			return "", false
-		}
-		server, err := normalizeServer(linea)
-		if err == nil {
-			return server, true
-		}
-		a.decir(enCastellano(err))
-		if intento == maxIntentos {
-			a.decir("Es la dirección que ves arriba en el navegador cuando entrás a Manducar, la de tu local: pizzeria.manduc.ar, no manduc.ar a secas.")
 			return "", false
 		}
 	}
@@ -289,16 +302,18 @@ func (a *asistente) instalar() error {
 	return installAgent()
 }
 
-// parseCode se queda con los seis dígitos del panel, como los pegue la
-// persona: con un espacio en el medio, con un guión, con espacios de más.
+// parseCode se queda con los ocho dígitos del panel, como los pegue la
+// persona: el panel los muestra en dos grupos («4286 2135»), y pueden llegar
+// con un guión, con espacios de más, o de cualquier otra forma en que se
+// copien ocho números.
 func parseCode(raw string) (string, error) {
 	s := strings.TrimSpace(raw)
 	if s == "" {
-		return "", errors.New("no escribiste nada: el código son los seis números que muestra el panel")
+		return "", errors.New("no escribiste nada: el código son los ocho números que muestra el panel")
 	}
 	limpio := strings.NewReplacer(" ", "", "-", "", ".", "").Replace(s)
-	if len(limpio) != 6 || !soloDigitos(limpio) {
-		return "", fmt.Errorf("«%s» no es un código de seis números: copiá el que muestra el panel, tal cual", s)
+	if len(limpio) != 8 || !soloDigitos(limpio) {
+		return "", fmt.Errorf("«%s» no es un código de ocho números: copiá el que muestra el panel, tal cual", s)
 	}
 	return limpio, nil
 }
@@ -312,13 +327,14 @@ func soloDigitos(s string) bool {
 	return true
 }
 
-// normalizeServer toma la dirección como la escribe alguien que no piensa en
-// URLs —«pizzeria.manduc.ar», o lo que copió de la barra del navegador con
+// normalizeServer toma la dirección como la escribiría alguien que no piensa
+// en URLs —«pizzeria.manduc.ar», o lo que copió de la barra del navegador con
 // todo lo que venía atrás— y la deja como la quiere el agente:
-// https://pizzeria.manduc.ar. El https no se discute: por ahí viajan el
-// código y el token. En la máquina de uno, que es donde se prueba, http
-// alcanza; y si alguien escribió el esquema a mano se lo respeta y decide
-// checkServer, que es el que ya sabía todo esto.
+// https://pizzeria.manduc.ar. La usa wizardServer para --servidor y para la
+// variable de entorno, que en pruebas se escriben así de sueltos. El https no
+// se discute: por ahí viajan el código y el token. En la máquina de uno, que
+// es donde se prueba, http alcanza; y si alguien escribió el esquema a mano
+// se lo respeta y decide checkServer, que es el que ya sabía todo esto.
 func normalizeServer(raw string) (string, error) {
 	s := strings.TrimSpace(raw)
 	if s == "" {

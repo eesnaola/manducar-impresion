@@ -27,9 +27,7 @@ cada vez que entrás a la computadora.
 2. **Abrirlo** con doble clic. Se abre una ventana y el programa te va
    guiando. La primera vez el sistema desconfía —el programa todavía no está
    firmado—: ver [los avisos de la primera vez](#los-avisos-de-la-primera-vez).
-3. **Pegar el código** de seis dígitos que muestra el panel, y después la
-   dirección de tu local (`pizzeria.manduc.ar`, la que ves arriba en el
-   navegador).
+3. **Pegar el código** que muestra el panel.
 
 Con eso queda vinculado, instalado y arrancando solo cada vez que entrás a esa
 computadora. Abrirlo de nuevo más adelante muestra a qué local está vinculado
@@ -42,19 +40,22 @@ Los mismos dos pasos, a mano, parado en la carpeta donde lo bajaste
 `chmod +x manducar-impresion`.
 
 ```
-.\manducar-impresion.exe vincular CODIGO --servidor https://TULOCAL.manduc.ar   # Windows
+.\manducar-impresion.exe vincular CODIGO   # Windows
 .\manducar-impresion.exe instalar
 
-./manducar-impresion vincular CODIGO --servidor https://TULOCAL.manduc.ar       # Mac y Linux
+./manducar-impresion vincular CODIGO       # Mac y Linux
 ./manducar-impresion instalar
 ```
 
-`CODIGO` es el de seis dígitos que muestra el panel (vence a los 10 minutos) y
-`--servidor` es la URL de tu local —el subdominio, no `manduc.ar` a secas—.
-Tiene que empezar con `https://`: por ahí viajan el código y el token.
+`CODIGO` es el de ocho dígitos que muestra el panel (vence a los 10 minutos).
 `manducar-impresion asistente` es el asistente del doble clic, y
 `manducar-impresion estado` dice a qué local quedó vinculada la computadora y
 dónde están la configuración y el log.
+
+**En pruebas o desarrollo**, `--servidor URL` vincula contra otro servidor que
+no sea `manduc.ar` —por ejemplo un local levantado a mano—, tanto en
+`vincular` como en `manducar-impresion asistente --servidor URL`; para el
+asistente sirve también la variable de entorno `MANDUCAR_IMPRESION_SERVIDOR`.
 
 ### Dónde queda
 
@@ -125,7 +126,7 @@ la sesión iniciada**, está el modo sistema: los mismos comandos con
 administrador (Windows).
 
 ```
-sudo manducar-impresion vincular CODIGO --servidor https://TULOCAL.manduc.ar --sistema
+sudo manducar-impresion vincular CODIGO --sistema
 sudo manducar-impresion instalar --sistema
 sudo manducar-impresion desinstalar --sistema
 ```

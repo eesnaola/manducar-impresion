@@ -45,7 +45,6 @@ func TestParsePairArgsComplainsAboutWhatFalta(t *testing.T) {
 		dice   string
 	}{
 		{"sin código", []string{"--servidor", "https://x"}, "falta el código"},
-		{"sin servidor", []string{"123456"}, "falta --servidor"},
 		{"sin nada", nil, "falta el código"},
 		{"dos códigos", []string{"123456", "654321", "--servidor", "https://x"}, "sobra «654321»"},
 	}
@@ -59,6 +58,21 @@ func TestParsePairArgsComplainsAboutWhatFalta(t *testing.T) {
 				t.Fatalf("dijo %q y tenía que decir %q", err, c.dice)
 			}
 		})
+	}
+}
+
+// Sin --servidor, vincular va contra el servidor de Manducar: no hace falta
+// saber la URL del local, y menos su subdominio.
+func TestParsePairArgsDefaultsToTheMainServer(t *testing.T) {
+	code, server, _, err := parsePairArgs([]string{"123456"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != "123456" {
+		t.Errorf("código: %q", code)
+	}
+	if server != defaultServer {
+		t.Errorf("servidor: %q, tenía que ser %q", server, defaultServer)
 	}
 }
 
@@ -171,6 +185,24 @@ func TestTakeFlagLeavesThePairingLineUsable(t *testing.T) {
 // En Windows sin administrador al agente lo lanza un .vbs: no hay ventana
 // donde mirar el log, así que va al archivo. Se puede pedir por la opción o
 // por la variable de entorno.
+// wizardServer es lo que decide contra qué servidor vincula el asistente:
+// --servidor le gana a la variable de entorno, que le gana al de Manducar.
+func TestWizardServerPrefersTheFlagThenTheEnvThenTheDefault(t *testing.T) {
+	if s, err := wizardServer(nil); err != nil || s != defaultServer {
+		t.Fatalf("por default: %q, %v", s, err)
+	}
+
+	t.Setenv(envServidor, "https://pizzeria.manduc.ar")
+	if s, err := wizardServer(nil); err != nil || s != "https://pizzeria.manduc.ar" {
+		t.Fatalf("por la variable de entorno: %q, %v", s, err)
+	}
+
+	s, err := wizardServer([]string{"--servidor", "http://pizzeria.manducar.localhost:8081"})
+	if err != nil || s != "http://pizzeria.manducar.localhost:8081" {
+		t.Fatalf("la opción tiene que ganarle a la variable: %q, %v", s, err)
+	}
+}
+
 func TestWantsFileLog(t *testing.T) {
 	casos := []struct {
 		nombre string

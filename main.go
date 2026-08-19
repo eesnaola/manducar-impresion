@@ -25,12 +25,22 @@ import (
 // Version la pone el release: -ldflags "-X main.Version=1.2.3".
 var Version = "dev"
 
+// defaultServer es el servidor de Manducar: vincular y el asistente hablan
+// ahí salvo que se les diga lo contrario. Los códigos valen para toda la
+// plataforma, así que no hace falta el subdominio del local —el servidor
+// igual lo sigue aceptando, para quien lo prefiera—.
+const defaultServer = "https://manduc.ar"
+
+// envServidor: para desarrollo, contra qué servidor vincula el asistente sin
+// tocar la línea de comandos.
+const envServidor = "MANDUCAR_IMPRESION_SERVIDOR"
+
 func main() {
 	if len(os.Args) < 2 {
 		// Sin argumentos es lo que hace un doble clic: se abrió una ventana y
 		// hay alguien mirándola, no una línea de comandos que alguien sepa
 		// escribir. Ahí va el asistente, no la lista de comandos.
-		os.Exit(cmdAsistente())
+		os.Exit(cmdAsistente(nil))
 	}
 	// `--sistema` vale para vincular, instalar y desinstalar, y puede venir en
 	// cualquier lugar de la línea: se lo saca acá, una vez, antes de que cada
@@ -39,7 +49,7 @@ func main() {
 	config.UseSystem(sistema)
 	switch os.Args[1] {
 	case "asistente":
-		os.Exit(cmdAsistente())
+		os.Exit(cmdAsistente(args))
 	case "vincular":
 		os.Exit(cmdPair(args, sistema))
 	case "correr":
@@ -75,7 +85,7 @@ Abrilo sin nada y te va guiando; los comandos son para el que prefiere la
 terminal.
 
   asistente                                      te va preguntando y hace todo (es lo que pasa al abrirlo)
-  vincular CODIGO --servidor https://TULOCAL.manduc.ar   vincula esta computadora con el código del panel
+  vincular CODIGO                                vincula esta computadora con el código que muestra el panel
   instalar                                       deja el agente arrancando solo cada vez que entrás
   desinstalar                                    saca el agente
   estado                                         a qué local está vinculada, dónde están la configuración y el log
@@ -87,6 +97,9 @@ Opciones:
                    para todos los usuarios de la computadora. Necesita sudo (Mac y
                    Linux) o una terminal como administrador (Windows). Sin esto,
                    que es lo normal, no hace falta ningún permiso.
+  --servidor URL   en vincular y en el asistente: en pruebas o desarrollo, contra qué
+                   servidor vincula, si no es manduc.ar. En el asistente vale también
+                   la variable de entorno MANDUCAR_IMPRESION_SERVIDOR.
   --log-archivo    en correr: en vez de mostrar el log, lo escribe en
                    impresion.log al lado de la configuración.`)
 }
@@ -113,9 +126,9 @@ func takeFlag(args []string, name string) ([]string, bool) {
 // que dar vuelta el bucle a mano para que las dos formas anden.
 func parsePairArgs(args []string) (code, server, name string, err error) {
 	fs := flag.NewFlagSet("vincular", flag.ContinueOnError)
-	// El subdominio del local, no el dominio raíz: el código de vinculación
-	// vale sólo en su local.
-	srv := fs.String("servidor", "", "la URL de tu local en Manducar, p. ej. https://pizzeria.manduc.ar")
+	// Sin --servidor va a manduc.ar, que es donde vale cualquier código: esto
+	// es sólo para pruebas o desarrollo, contra otro servidor.
+	srv := fs.String("servidor", "", "para pruebas: la URL del servidor, si no es "+defaultServer)
 	nombre := fs.String("nombre", defaultName(), "cómo llamar a esta computadora en el panel")
 
 	var sueltos []string
@@ -133,11 +146,12 @@ func parsePairArgs(args []string) (code, server, name string, err error) {
 
 	switch {
 	case len(sueltos) == 0:
-		return "", "", "", errors.New("falta el código de seis dígitos que muestra el panel")
+		return "", "", "", errors.New("falta el código de ocho dígitos que muestra el panel")
 	case len(sueltos) > 1:
 		return "", "", "", fmt.Errorf("sobra «%s»: se vincula con un solo código", sueltos[1])
-	case *srv == "":
-		return "", "", "", errors.New("falta --servidor: la URL de tu local, p. ej. https://pizzeria.manduc.ar (la muestra el panel junto al código)")
+	}
+	if *srv == "" {
+		return sueltos[0], defaultServer, *nombre, nil
 	}
 	server, err = checkServer(*srv)
 	if err != nil {

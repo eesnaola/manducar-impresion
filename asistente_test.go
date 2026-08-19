@@ -13,17 +13,17 @@ import (
 )
 
 // El código lo copia una persona de una pantalla: viene con espacios, con
-// guiones, o viene mal.
+// guiones, o viene mal. El panel lo muestra en dos grupos, «4286 2135».
 func TestParseCode(t *testing.T) {
 	casos := []struct {
 		nombre  string
 		escrito string
 		queda   string
 	}{
-		{"tal cual", "123456", "123456"},
-		{"con espacios alrededor", "  123456  ", "123456"},
-		{"partido al medio", "123 456", "123456"},
-		{"con guión", "12-34-56", "123456"},
+		{"tal cual", "42862135", "42862135"},
+		{"con espacios alrededor", "  42862135  ", "42862135"},
+		{"como lo muestra el panel, con el espacio del medio", "4286 2135", "42862135"},
+		{"con guión", "4286-2135", "42862135"},
 	}
 	for _, c := range casos {
 		t.Run(c.nombre, func(t *testing.T) {
@@ -45,10 +45,13 @@ func TestParseCodeRechazaLoQueNoEsUnCodigo(t *testing.T) {
 		dice    string
 	}{
 		{"vacío", "   ", "no escribiste nada"},
-		{"corto", "12345", "seis números"},
-		{"largo", "1234567", "seis números"},
-		{"con letras", "12345a", "seis números"},
-		{"el nombre del local", "pizzeria", "seis números"},
+		// Los códigos de seis dígitos ya no existen: se rechazan igual que
+		// cualquier otro largo que no sea ocho.
+		{"un código viejo, de seis", "123456", "ocho números"},
+		{"corto", "1234567", "ocho números"},
+		{"largo", "123456789", "ocho números"},
+		{"con letras", "1234567a", "ocho números"},
+		{"el nombre del local", "pizzeria", "ocho números"},
 	}
 	for _, c := range casos {
 		t.Run(c.nombre, func(t *testing.T) {
@@ -158,8 +161,8 @@ func servidorDeMentira(t *testing.T, anotar func(code, name string)) *httptest.S
 	return s
 }
 
-// El camino de todos los días: se abre el programa, se pega el código, se
-// escribe la dirección, y la computadora queda vinculada e instalada.
+// El camino de todos los días: se abre el programa, se pega el código, y la
+// computadora queda vinculada e instalada sin que se le pregunte nada más.
 func TestAsistenteVinculaEInstalaSinQueNadieEscribaUnComando(t *testing.T) {
 	p := preparar(t)
 	var pedido struct{ code, name string }
@@ -168,14 +171,13 @@ func TestAsistenteVinculaEInstalaSinQueNadieEscribaUnComando(t *testing.T) {
 	installAgent = func() error { instalado = true; return nil }
 
 	var out strings.Builder
-	if code := asistir(strings.NewReader("123456\n"+srv.URL+"\n"), &out); code != 0 {
+	if code := asistir(strings.NewReader("4286 2135\n"), &out, srv.URL); code != 0 {
 		t.Fatalf("salió con %d:\n%s", code, out.String())
 	}
 	texto := out.String()
 	for _, dice := range []string{
 		"Manducar — impresión",
-		"Pegá el código de seis dígitos que muestra el panel:",
-		"Dirección de tu local en Manducar",
+		"Pegá el código que muestra el panel:",
 		"Listo: esta computadora quedó vinculada a «Pizzería Demo».",
 		"arranca solo cada vez que entrás",
 		"impresion.log",
@@ -185,7 +187,10 @@ func TestAsistenteVinculaEInstalaSinQueNadieEscribaUnComando(t *testing.T) {
 			t.Errorf("no dijo %q:\n%s", dice, texto)
 		}
 	}
-	if pedido.code != "123456" {
+	if contains(texto, "Dirección de tu local") {
+		t.Errorf("no tenía que preguntar la dirección:\n%s", texto)
+	}
+	if pedido.code != "42862135" {
 		t.Errorf("al servidor le mandó el código %q", pedido.code)
 	}
 	if pedido.name == "" {
@@ -214,13 +219,13 @@ func TestAsistenteVuelveAPedirElCodigoMalEscrito(t *testing.T) {
 	srv := servidorDeMentira(t, func(code, _ string) { pedido = code })
 
 	var out strings.Builder
-	if code := asistir(strings.NewReader("hola\n12345\n123456\n"+srv.URL+"\n"), &out); code != 0 {
+	if code := asistir(strings.NewReader("hola\n1234567\n42862135\n"), &out, srv.URL); code != 0 {
 		t.Fatalf("salió con %d:\n%s", code, out.String())
 	}
-	if pedido != "123456" {
+	if pedido != "42862135" {
 		t.Fatalf("al servidor le llegó %q", pedido)
 	}
-	if !contains(out.String(), "no es un código de seis números") {
+	if !contains(out.String(), "no es un código de ocho números") {
 		t.Fatalf("no se quejó del código:\n%s", out.String())
 	}
 }
@@ -229,10 +234,10 @@ func TestAsistenteVuelveAPedirElCodigoMalEscrito(t *testing.T) {
 func TestAsistenteSeRindeDespuesDeTresIntentos(t *testing.T) {
 	preparar(t)
 	llamaron := false
-	servidorDeMentira(t, func(string, string) { llamaron = true })
+	srv := servidorDeMentira(t, func(string, string) { llamaron = true })
 
 	var out strings.Builder
-	if code := asistir(strings.NewReader("uno\ndos\ntres\n"), &out); code != 1 {
+	if code := asistir(strings.NewReader("uno\ndos\ntres\n"), &out, srv.URL); code != 1 {
 		t.Fatalf("salió con %d y tenía que salir con 1:\n%s", code, out.String())
 	}
 	if llamaron {
@@ -255,7 +260,7 @@ func TestAsistenteYaVinculadaMuestraElLocalYElEstado(t *testing.T) {
 	}
 
 	var out strings.Builder
-	if code := asistir(strings.NewReader("3\n"), &out); code != 0 {
+	if code := asistir(strings.NewReader("3\n"), &out, defaultServer); code != 0 {
 		t.Fatalf("salió con %d:\n%s", code, out.String())
 	}
 	texto := out.String()
@@ -287,7 +292,7 @@ func TestAsistenteInstalaDesdeElMenu(t *testing.T) {
 	installAgent = func() error { instalado = true; return nil }
 
 	var out strings.Builder
-	if code := asistir(strings.NewReader("1\n"), &out); code != 0 {
+	if code := asistir(strings.NewReader("1\n"), &out, defaultServer); code != 0 {
 		t.Fatalf("salió con %d:\n%s", code, out.String())
 	}
 	if !instalado {
@@ -307,8 +312,8 @@ func TestAsistenteOfreceReintentarLaInstalacion(t *testing.T) {
 	srv := servidorDeMentira(t, nil)
 
 	var out strings.Builder
-	// código, dirección, «sí» al primer reintento, «no» al segundo.
-	code := asistir(strings.NewReader("123456\n"+srv.URL+"\ns\nn\n"), &out)
+	// código, «sí» al primer reintento, «no» al segundo.
+	code := asistir(strings.NewReader("42862135\ns\nn\n"), &out, srv.URL)
 	if code != 1 {
 		t.Fatalf("salió con %d y tenía que salir con 1:\n%s", code, out.String())
 	}
@@ -326,14 +331,14 @@ func TestAsistenteEsperaElEnterFinalSoloEnUnaTerminal(t *testing.T) {
 	preparar(t)
 	esTerminal = func() bool { return true }
 	var out strings.Builder
-	asistir(strings.NewReader(""), &out)
+	asistir(strings.NewReader(""), &out, defaultServer)
 	if !contains(out.String(), "apretá Enter para salir") {
 		t.Fatalf("no esperó a que lo lean:\n%s", out.String())
 	}
 
 	esTerminal = func() bool { return false }
 	var otro strings.Builder
-	asistir(strings.NewReader(""), &otro)
+	asistir(strings.NewReader(""), &otro, defaultServer)
 	if contains(otro.String(), "apretá Enter para salir") {
 		t.Fatalf("con la entrada redirigida no hay a quién esperar:\n%s", otro.String())
 	}
@@ -349,7 +354,7 @@ func TestAsistenteCuentaElErrorDeRedEnCastellano(t *testing.T) {
 	srv.Close() // el puerto queda cerrado: es lo que se ve sin internet
 
 	var out strings.Builder
-	if code := asistir(strings.NewReader("123456\n"+dir+"\nn\n"), &out); code != 1 {
+	if code := asistir(strings.NewReader("42862135\nn\n"), &out, dir); code != 1 {
 		t.Fatalf("salió con %d y tenía que salir con 1:\n%s", code, out.String())
 	}
 	texto := out.String()
