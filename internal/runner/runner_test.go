@@ -931,3 +931,58 @@ func TestVigilanteReportaElQueAlFinalSalio(t *testing.T) {
 		t.Fatalf("vigilados: %+v", r.vigilados)
 	}
 }
+
+// El semáforo: el latido trae impresoras, el pulso las mira y el reporte
+// llega al servidor; la que está imprimiendo no se pulsa.
+func TestPulsarImpresorasReportaElSemaforo(t *testing.T) {
+	var mu sync.Mutex
+	var recibido []api.PrinterHealth
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/agente/impresoras/estado" {
+			var body struct {
+				Estados []api.PrinterHealth `json:"estados"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			recibido = body.Estados
+			mu.Unlock()
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	r := testRunner(t, srv.URL)
+	r.probe = func(_ context.Context, tg api.Target) string {
+		if tg.Address == "127.0.0.1:1" {
+			return "UNREACHABLE"
+		}
+		return "OK"
+	}
+	// La 2 está imprimiendo: su cola tiene un trabajo → OK sin pulsar. La
+	// cola se arma a mano (sin worker) para que el test no dependa de una
+	// carrera con el que imprime.
+	ocupada := api.Target{Kind: "network", Address: "127.0.0.1:1"}
+	q := newQueue("ocupada")
+	q.push(api.Job{ID: 9, Printer: ocupada})
+	r.printersMu.Lock()
+	r.printers[ocupada.Kind+"|"+ocupada.Address+"|"+ocupada.SystemName] = q
+	r.printersMu.Unlock()
+
+	r.pulsarImpresoras(context.Background(), []api.PrinterRef{
+		{ID: 1, Target: api.Target{Kind: "network", Address: "127.0.0.1:9100"}},
+		{ID: 2, Target: api.Target{Kind: "network", Address: "127.0.0.1:1"}},
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(recibido) != 2 {
+		t.Fatalf("llegaron %d estados: %+v", len(recibido), recibido)
+	}
+	if recibido[0].ID != 1 || recibido[0].Health != "OK" {
+		t.Errorf("la 1: %+v", recibido[0])
+	}
+	// La 2 comparte target con la cola ocupada: cuenta como viva sin pulsar.
+	if recibido[1].ID != 2 || recibido[1].Health != "OK" {
+		t.Errorf("la 2 (imprimiendo): %+v", recibido[1])
+	}
+}

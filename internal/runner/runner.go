@@ -104,6 +104,10 @@ type runner struct {
 	vigilados []vigilado
 	// spool se inyecta en los tests; afuera es printer.Spool.
 	spool func(context.Context, string, string) (printer.SpoolState, error)
+	// probe se inyecta en los tests; afuera es el pulso real (printer.Probe).
+	probe func(context.Context, api.Target) string
+	// pulsando evita pisar un pulso con el siguiente si uno se colgara.
+	pulsando atomic.Bool
 
 	// Lo de la actualización lo toca sólo el latido, que es uno solo.
 	pending  *api.Release // versión anunciada por el servidor
@@ -113,11 +117,14 @@ type runner struct {
 
 func newRunner(cfg config.Config, out *outbox.Outbox, version string) *runner {
 	r := &runner{
-		cfg:       cfg,
-		out:       out,
-		version:   version,
-		write:     printer.Write,
-		spool:     printer.Spool,
+		cfg:     cfg,
+		out:     out,
+		version: version,
+		write:   printer.Write,
+		spool:   printer.Spool,
+		probe: func(ctx context.Context, t api.Target) string {
+			return string(printer.Probe(ctx, printer.NewTarget(t.Kind, t.Address, t.SystemName)))
+		},
 		kick:      make(chan struct{}, 1),
 		flushKick: make(chan struct{}, 1),
 		flushStop: make(chan struct{}),
@@ -245,6 +252,12 @@ func (r *runner) heartbeatLoop(ctx context.Context) {
 			}
 			if res.JobsPending > 0 {
 				r.kickFetch(false)
+			}
+			// El semáforo: pulsar las impresoras que el servidor dice que son
+			// de esta computadora, y contarle cómo están. En su goroutine: el
+			// pulso puede tardar (timeouts) y el latido no espera a nadie.
+			if len(res.Printers) > 0 {
+				go r.pulsarImpresoras(ctx, res.Printers)
 			}
 			r.maybeUpdate(ctx)
 		}
@@ -564,6 +577,54 @@ func (r *runner) print(jobCtx context.Context, j api.Job) {
 			}
 		})
 	}
+}
+
+// pulsarImpresoras: el semáforo. A cada impresora de esta computadora se le
+// pregunta cómo está (sin imprimirle nada) y el resultado va al servidor. La
+// que está imprimiendo en este momento no se pulsa: está viva por definición,
+// y meterle un TCP de más a una térmica de una sola conexión la marearía.
+func (r *runner) pulsarImpresoras(ctx context.Context, refs []api.PrinterRef) {
+	if !r.pulsando.CompareAndSwap(false, true) {
+		return
+	}
+	defer r.pulsando.Store(false)
+
+	estados := make([]api.PrinterHealth, 0, len(refs))
+	for _, ref := range refs {
+		if ctx.Err() != nil {
+			return
+		}
+		var salud string
+		if r.imprimiendo(ref.Target) {
+			salud = string(printer.HealthOK)
+		} else {
+			salud = r.probe(ctx, ref.Target)
+		}
+		estados = append(estados, api.PrinterHealth{ID: ref.ID, Health: salud})
+	}
+	if len(estados) == 0 {
+		return
+	}
+	c, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := r.api().ReportPrinterHealth(c, estados); err != nil {
+		// Efímero: el próximo latido trae otro pulso. Sólo al log.
+		log.Println("no se pudo contar el estado de las impresoras:", err)
+	}
+}
+
+// imprimiendo: ¿hay una cola con trabajos para ese destino ahora mismo?
+func (r *runner) imprimiendo(t api.Target) bool {
+	key := t.Kind + "|" + t.Address + "|" + t.SystemName
+	r.printersMu.Lock()
+	defer r.printersMu.Unlock()
+	q, ok := r.printers[key]
+	if !ok {
+		return false
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.jobs) > 0
 }
 
 // vigilar anota un trabajo trabado en el spooler para seguir mirándolo.

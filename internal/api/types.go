@@ -29,6 +29,21 @@ type HeartbeatResponse struct {
 	Agent            *Release `json:"agent"`
 	JobsPending      int      `json:"jobsPending"`
 	HeartbeatSeconds int      `json:"heartbeatSeconds"`
+	// Printers: las impresoras a cargo de esta computadora, para pulsarlas
+	// y contarle al servidor cómo están (el semáforo del panel).
+	Printers []PrinterRef `json:"printers"`
+}
+
+// PrinterRef es una impresora del panel: su id y su target.
+type PrinterRef struct {
+	ID int `json:"id"`
+	Target
+}
+
+// PrinterHealth es el resultado del pulso a una impresora.
+type PrinterHealth struct {
+	ID     int    `json:"id"`
+	Health string `json:"health"`
 }
 
 type Target struct {

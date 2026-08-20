@@ -73,6 +73,12 @@ func (c *Client) FetchJobs(ctx context.Context) ([]Job, error) {
 	return out.Jobs, nil
 }
 
+// ReportPrinterHealth cuenta el semáforo. Es efímero: si no llega, llega el
+// del próximo latido — por eso no pasa por el outbox.
+func (c *Client) ReportPrinterHealth(ctx context.Context, estados []PrinterHealth) error {
+	return c.post(ctx, "/agente/impresoras/estado", map[string]any{"estados": estados}, nil)
+}
+
 func (c *Client) Report(ctx context.Context, jobID int, r Result) error {
 	return c.post(ctx, fmt.Sprintf("/agente/trabajos/%d/resultado", jobID), r, nil)
 }
