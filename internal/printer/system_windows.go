@@ -30,8 +30,15 @@ func writeSystem(ctx context.Context, name string, payload []byte) Outcome {
 	}
 	defer p.Close()
 	doc := fmt.Sprintf("Manducar %d-%d", os.Getpid(), atomic.AddUint64(&docSeq, 1))
-	if err := p.StartRawDocument(doc); err != nil {
-		return Outcome{Err: fmt.Errorf("«%s»: el spooler no aceptó abrir el documento (RAW): %w", name, err)}
+	// RAW primero y XPS_PASS de repuesto, a mano: StartRawDocument de la
+	// librería elige uno solo mirando el driver, y esa detección yerra (el
+	// Generic/Text del runner de GitHub figura como XPS, manda XPS_PASS y el
+	// spooler contesta «The data is invalid»). Una térmica es RAW siempre;
+	// el driver v4 que de verdad exige XPS_PASS cae en el segundo intento.
+	if err := p.StartDocument(doc, "RAW"); err != nil {
+		if err2 := p.StartDocument(doc, "XPS_PASS"); err2 != nil {
+			return Outcome{Err: fmt.Errorf("«%s»: el spooler no aceptó abrir el documento (RAW: %v; XPS_PASS: %v)", name, err, err2)}
+		}
 	}
 	// A partir de acá el spooler ya tiene un trabajo abierto: aunque el
 	// primer Write falle con 0 bytes escritos, ese trabajo ya existe y no
