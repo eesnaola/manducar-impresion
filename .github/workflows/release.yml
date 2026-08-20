@@ -57,6 +57,9 @@ jobs:
           } > dist/notas.md
       - uses: softprops/action-gh-release@v2
         with:
+          # Un tag -rc es para probar (SmartScreen, autoactualización): queda
+          # como pre-release y no se vuelve el «latest» que ve la gente.
+          prerelease: ${{ contains(github.ref_name, '-rc') }}
           body_path: dist/notas.md
           files: |
             dist/manducar-impresion-*
