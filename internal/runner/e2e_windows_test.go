@@ -15,6 +15,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -30,6 +31,7 @@ import (
 
 	"github.com/eesnaola/manducar-impresion/internal/api"
 	"github.com/eesnaola/manducar-impresion/internal/config"
+	"github.com/eesnaola/manducar-impresion/internal/printer"
 )
 
 // sondaDatatypes prueba a mano qué acepta el spooler para esta impresora:
@@ -349,5 +351,84 @@ func TestE2EWindowsAutoactualizacion(t *testing.T) {
 	}
 	if sha256.Sum256(instalado) != suma {
 		t.Error("el binario instalado no es el nuevo")
+	}
+}
+
+// El semáforo en Windows de verdad: una impresora sobre un Standard TCP/IP
+// Port en crudo, con una térmica de mentira atrás que contesta DLE EOT. Es
+// lo que valida GetPrinter + el registro + el pulso al socket, que acá se
+// escribió sin una máquina Windows a mano.
+func TestE2EWindowsSemaforo(t *testing.T) {
+	const (
+		imp    = "ManducarSemaforo"
+		puerto = "ManducarSemaforo_TCP"
+	)
+	// La térmica de mentira: contesta DLE EOT 2 con «tapa abierta».
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	tcp := ln.Addr().(*net.TCPAddr)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				buf := make([]byte, 3)
+				for {
+					_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+					n, err := c.Read(buf)
+					if err != nil {
+						return
+					}
+					if n == 3 && buf[0] == 0x10 && buf[1] == 0x04 {
+						switch buf[2] {
+						case 2:
+							_, _ = c.Write([]byte{0x12 | 0x04}) // tapa abierta
+						default:
+							_, _ = c.Write([]byte{0x12})
+						}
+					}
+				}
+			}(conn)
+		}
+	}()
+
+	if _, err := ps(t, fmt.Sprintf("Add-PrinterPort -Name '%s' -PrinterHostAddress '127.0.0.1' -PortNumber %d", puerto, tcp.Port)); err != nil {
+		t.Skipf("no se pudo crear el puerto TCP: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = ps(t, "Remove-Printer -Name '"+imp+"' -ErrorAction SilentlyContinue; Remove-PrinterPort -Name '"+puerto+"' -ErrorAction SilentlyContinue")
+	})
+	psFatal(t, "Add-Printer -Name '"+imp+"' -DriverName 'Generic / Text Only' -PortName '"+puerto+"'")
+
+	target := printer.NewTarget("system", "", imp)
+
+	// Con la térmica contestando: el pulso atraviesa el spooler y trae el
+	// estado ESC/POS de atrás.
+	if got := printer.Probe(context.Background(), target); got != printer.HealthCoverOpen {
+		t.Errorf("con la tapa abierta: %s", got)
+	}
+
+	// Pausada en Windows: frenada, sin importar el socket.
+	psFatal(t, "Invoke-CimMethod -MethodName Pause -InputObject (Get-CimInstance Win32_Printer -Filter \"Name='"+imp+"'\") | Out-Null")
+	if got := printer.Probe(context.Background(), target); got != printer.HealthStopped {
+		t.Errorf("pausada: %s", got)
+	}
+	psFatal(t, "Invoke-CimMethod -MethodName Resume -InputObject (Get-CimInstance Win32_Printer -Filter \"Name='"+imp+"'\") | Out-Null")
+
+	// Térmica apagada: no responde, aunque el spooler diga «listo».
+	_ = ln.Close()
+	if got := printer.Probe(context.Background(), target); got != printer.HealthUnreachable {
+		t.Errorf("apagada: %s", got)
+	}
+
+	// Y la que no existe en esta computadora.
+	if got := printer.Probe(context.Background(), printer.NewTarget("system", "", "NoExisteTal")); got != printer.HealthMissing {
+		t.Errorf("inexistente: %s", got)
 	}
 }

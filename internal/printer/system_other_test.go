@@ -86,3 +86,22 @@ func TestNumeroDeTrabajo(t *testing.T) {
 		t.Errorf("no numérico → %q", got)
 	}
 }
+
+func TestSocketHostPortEntiendeLosDeviceURIDeCUPS(t *testing.T) {
+	casos := map[string]string{
+		"socket://127.0.0.1:9100":                 "127.0.0.1:9100",
+		"socket://192.168.0.50":                   "192.168.0.50:9100",
+		"socket://cocina.local:9101/?waiteof=off": "cocina.local:9101",
+	}
+	for uri, quiero := range casos {
+		got, ok := socketHostPort(uri)
+		if !ok || got != quiero {
+			t.Errorf("%s → %q/%v, esperaba %q", uri, got, ok, quiero)
+		}
+	}
+	for _, uri := range []string{"ipp://host/printers/x", "usb://EPSON", "", "socket://"} {
+		if _, ok := socketHostPort(uri); ok {
+			t.Errorf("%q no es un socket con destino", uri)
+		}
+	}
+}
