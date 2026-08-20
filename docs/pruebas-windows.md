@@ -33,6 +33,17 @@ Preparación (una vez):
    (`tools/impresora-dummy.py` de manducar) escuchando. Pausar/cancelar se
    hace desde la ventanita de la cola, como un usuario real.
 
+Para que el doble clic vincule contra el dev (y no contra manduc.ar), antes
+de abrirlo, en un PowerShell:
+
+```
+cmd /c "set MANDUCAR_IMPRESION_SERVIDOR=http://pizzeria.manducar.localhost:8081&& manducar-impresion.exe asistente < NUL"
+```
+
+(el `< NUL` es lo que hace que pregunte en cuadros y no en la consola; o
+`setx MANDUCAR_IMPRESION_SERVIDOR …` y cerrar sesión, y de ahí en más el
+doble clic normal va al dev).
+
 Checklist por versión (bajar el `.exe` DESDE EL NAVEGADOR de la VM, para que
 traiga la marca de internet):
 
