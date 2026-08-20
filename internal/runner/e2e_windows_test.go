@@ -278,10 +278,22 @@ func TestE2EWindowsAutoactualizacion(t *testing.T) {
 	}
 	suma := sha256.Sum256(nuevaBytes)
 
+	// La prueba de vida del binario nuevo es su LATIDO: el proceso viejo, al
+	// actualizarse, larga un hijo con la consola oculta y el stdio en NUL,
+	// así que su log no se puede mirar — pero su latido trae la versión.
+	var mu sync.Mutex
+	versiones := map[string]bool{}
 	var web *httptest.Server
 	web = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/agente/latido":
+			var body struct {
+				Version string `json:"version"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			versiones[body.Version] = true
+			mu.Unlock()
 			fmt.Fprintf(w, `{"mercure":{"url":"http://127.0.0.1:1/.well-known/mercure","jwt":"j","topic":"t"},"agent":{"version":"0.0.2-e2e","sha256":"%x","url":"%s/descarga"},"jobsPending":0,"heartbeatSeconds":5}`, suma, web.URL)
 		case r.URL.Path == "/descarga":
 			_, _ = w.Write(nuevaBytes)
@@ -292,6 +304,12 @@ func TestE2EWindowsAutoactualizacion(t *testing.T) {
 		}
 	}))
 	defer web.Close()
+
+	// El hijo rearrancado no es nuestro proceso: al final se lo baja por
+	// nombre de imagen, o el TempDir no se puede borrar.
+	t.Cleanup(func() {
+		_, _ = ps(t, "taskkill /F /IM agente.exe 2>$null; Start-Sleep -Milliseconds 500")
+	})
 
 	cfg := filepath.Join(dir, "impresion.json")
 	t.Setenv("MANDUCAR_IMPRESION_CONFIG", cfg)
@@ -314,11 +332,11 @@ func TestE2EWindowsAutoactualizacion(t *testing.T) {
 	defer func() { _ = agente.Process.Kill() }()
 
 	// El primer latido anuncia la nueva; el agente baja, verifica, se pisa y
-	// rearranca. La prueba de vida es el renglón de arranque con la versión
-	// nueva en el MISMO log.
-	esperar(t, 120*time.Second, "el rearranque como 0.0.2-e2e", func() bool {
-		b, err := os.ReadFile(filepath.Join(dir, "salida.log"))
-		return err == nil && strings.Contains(string(b), "manducar-impresion 0.0.2-e2e")
+	// rearranca. La prueba de vida es el latido del binario nuevo.
+	esperar(t, 120*time.Second, "el latido del 0.0.2-e2e", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return versiones["0.0.2-e2e"]
 	})
 	b, _ := os.ReadFile(filepath.Join(dir, "salida.log"))
 	if !strings.Contains(string(b), "actualizado a 0.0.2-e2e") {
