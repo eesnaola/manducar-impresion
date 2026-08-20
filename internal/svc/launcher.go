@@ -31,10 +31,10 @@ func vbsLauncher(exe, cfgPath string, args ...string) string {
 		`Set sh = CreateObject("WScript.Shell")`,
 	}
 	if cfgPath != "" {
-		lineas = append(lineas, `sh.Environment("PROCESS").Item(`+vbsString(config.EnvPath)+`) = `+vbsString(cfgPath))
+		lineas = append(lineas, `sh.Environment("PROCESS").Item(`+VBSString(config.EnvPath)+`) = `+VBSString(cfgPath))
 	}
 	lineas = append(lineas,
-		"sh.Run "+vbsString(windowsCommandLine(exe, args...))+", 0, False",
+		"sh.Run "+VBSString(windowsCommandLine(exe, args...))+", 0, False",
 		// CRLF y un renglón al final: es un archivo de Windows y lo puede
 		// llegar a abrir el Bloc de notas.
 		"")
@@ -75,10 +75,12 @@ func quotedSegments(s string) []string {
 	return out
 }
 
-// vbsString mete una cadena adentro de un literal de VBScript, donde la
+// VBSString mete una cadena adentro de un literal de VBScript, donde la
 // comilla se escapa duplicándola. Los `\` de las rutas de Windows no se tocan:
-// en VBScript no escapan nada.
-func vbsString(s string) string {
+// en VBScript no escapan nada. Está exportada porque el asistente arma sus
+// propios .vbs —los cuadros de diálogo del doble clic— y el escapado tiene que
+// ser uno solo: dos copias de esto es una que algún día se olvida.
+func VBSString(s string) string {
 	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 }
 

@@ -41,6 +41,9 @@ var (
 	backlogWarn       = 20                    // al llegar a esta cola, la impresora es noticia
 	updateRetry       = time.Hour             // cuánto se espera antes de reintentar una actualización que falló
 	selfKick          = 11 * time.Second      // cuándo se vuelve a preguntar tras un trabajo que no escribió nada
+	vigilCada         = 30 * time.Second      // cada cuánto se mira si un trabajo trabado en el spooler al final salió
+	vigilHasta        = 48 * time.Hour        // cuánto tiempo se lo mira antes de darlo por perdido
+	vigilTope         = 100                   // cuántos se miran a la vez (más que esto es una impresora muerta)
 	logRepeatEvery    = 5 * time.Minute       // cada cuánto se repite en el log una línea de error que se repite
 )
 
@@ -92,6 +95,16 @@ type runner struct {
 	printersMu sync.Mutex
 	printers   map[string]*queue // una cola y un worker por impresora
 
+	// Los trabajos que quedaron trabados en la cola del sistema («sin
+	// confirmar» del lado del servidor): se los sigue mirando y, si el
+	// spooler al final los saca —volvió la impresora—, se avisa que salió.
+	// En memoria a propósito: si el agente se reinicia, quedan como estaban
+	// y los destraba una persona.
+	vigilMu   sync.Mutex
+	vigilados []vigilado
+	// spool se inyecta en los tests; afuera es printer.Spool.
+	spool func(context.Context, string, string) (printer.SpoolState, error)
+
 	// Lo de la actualización lo toca sólo el latido, que es uno solo.
 	pending  *api.Release // versión anunciada por el servidor
 	failed   *api.Release // la última que no se pudo aplicar
@@ -104,6 +117,7 @@ func newRunner(cfg config.Config, out *outbox.Outbox, version string) *runner {
 		out:       out,
 		version:   version,
 		write:     printer.Write,
+		spool:     printer.Spool,
 		kick:      make(chan struct{}, 1),
 		flushKick: make(chan struct{}, 1),
 		flushStop: make(chan struct{}),
@@ -154,6 +168,8 @@ func Run(ctx context.Context, version string) error {
 	go r.sseLoop(ctx)
 	// Poll de respaldo mientras el SSE esté caído.
 	go r.fallbackLoop(ctx)
+	// Los trabados en el spooler, por si al final salen.
+	go r.vigilante(jobCtx)
 	// Un solo buscador: los demás le piden que busque.
 	go r.fetcher(ctx, jobCtx)
 
@@ -267,15 +283,19 @@ func (r *runner) sseLoop(ctx context.Context) {
 			continue
 		}
 		sub, cancel := context.WithCancel(ctx)
-		// Se reengancha cuando el JWT cambia: el latido lo renueva.
-		go func(jwt string) {
+		// Se reengancha cuando el hub cambia en cualquiera de sus partes: el
+		// latido renueva el JWT, pero también puede corregir la URL (pasó: un
+		// servidor de dev mal configurado repartió «http://localhost» y el
+		// agente se quedó clavado en ella para siempre, porque el JWT —que es
+		// del tópico, no de la URL— nunca cambiaba).
+		go func(antes config.Mercure) {
 			for sleep(sub, jwtCheckEvery) {
-				if r.mercure().JWT != jwt {
+				if r.mercure() != antes {
 					cancel()
 					return
 				}
 			}
-		}(m.JWT)
+		}(m)
 		wake.Listen(sub, m.URL, m.Topic, m.JWT,
 			func() { r.kickFetch(true) },
 			func(up bool) {
@@ -401,6 +421,15 @@ func (r *runner) fetch(ctx, jobCtx context.Context, woken bool) {
 
 // queue es la cola de una impresora: sin tope, así el que reparte nunca se
 // queda esperando a la impresora más lenta.
+// vigilado es un papel que el sistema aceptó y no sacó: puede salir solo
+// cuando la impresora vuelva.
+type vigilado struct {
+	jobID   int
+	printer string // el nombre de la impresora en el sistema
+	spoolID string
+	desde   time.Time
+}
+
 type queue struct {
 	name string
 	sig  chan struct{} // capacidad 1: «hay algo para sacar»
@@ -502,7 +531,7 @@ func (r *runner) print(jobCtx context.Context, j api.Job) {
 
 	log.Printf("→ trabajo %d (%s) a %s, %d bytes", j.ID, j.Kind, targetLabel(j.Printer), len(j.Payload))
 	out := r.write(jobCtx, j.Printer, j.Payload)
-	res := api.Result{OK: out.OK, WroteSomething: out.WroteSomething}
+	res := api.Result{OK: out.OK, WroteSomething: out.WroteSomething, Canceled: out.Canceled}
 	if out.Err != nil {
 		res.Error = out.Err.Error()
 		log.Printf("✗ trabajo %d: %v", j.ID, out.Err)
@@ -516,6 +545,13 @@ func (r *runner) print(jobCtx context.Context, j api.Job) {
 	// Confirmarlo es tarea del flusher: la impresora sigue con el que viene.
 	r.kickFlush()
 
+	// Quedó trabado en la cola del sistema: se lo sigue mirando por si el
+	// spooler al final lo saca —la impresora volvió— y entonces sí salió.
+	// El cancelado no se vigila: ya se sabe qué fue de él.
+	if !out.OK && !out.Canceled && out.SpoolID != "" {
+		r.vigilar(j.ID, j.Printer.SystemName, out.SpoolID)
+	}
+
 	// No escribió nada: el servidor lo reprograma para dentro de 10 o 20
 	// segundos, pero no vuelve a avisar por el hub. Con el hub sano el poll
 	// de respaldo no corre, así que si no preguntamos solos la comanda espera
@@ -527,6 +563,74 @@ func (r *runner) print(jobCtx context.Context, j api.Job) {
 				r.kickFetch(false)
 			}
 		})
+	}
+}
+
+// vigilar anota un trabajo trabado en el spooler para seguir mirándolo.
+func (r *runner) vigilar(jobID int, printerName, spoolID string) {
+	r.vigilMu.Lock()
+	defer r.vigilMu.Unlock()
+	if len(r.vigilados) >= vigilTope {
+		return
+	}
+	r.vigilados = append(r.vigilados, vigilado{jobID: jobID, printer: printerName, spoolID: spoolID, desde: time.Now()})
+}
+
+// vigilante mira cada tanto los trabajos que el sistema aceptó y no sacó.
+// El que desaparece de la cola del sistema, salió: se avisa como impreso
+// (si en el medio alguien lo reintentó o lo descartó, el servidor ya sabe
+// qué hacer con un aviso tardío). El que lleva demasiado tiempo se deja de
+// mirar: lo destraba una persona.
+func (r *runner) vigilante(ctx context.Context) {
+	for sleep(ctx, vigilCada) {
+		r.vigilarUnaVuelta(ctx)
+	}
+}
+
+// vigilarUnaVuelta mira una vez cada vigilado. Separada del bucle para poder
+// probarla sin relojes.
+func (r *runner) vigilarUnaVuelta(ctx context.Context) {
+	r.vigilMu.Lock()
+	pendientes := append([]vigilado(nil), r.vigilados...)
+	r.vigilMu.Unlock()
+	if len(pendientes) == 0 {
+		return
+	}
+	var quedan []vigilado
+	reporto := false
+	for _, v := range pendientes {
+		estado, err := r.spool(ctx, v.printer, v.spoolID)
+		switch {
+		case err != nil:
+			// No se pudo preguntar: se sigue mirando, salvo que ya sea viejo.
+			if time.Since(v.desde) < vigilHasta {
+				quedan = append(quedan, v)
+			}
+		case estado == printer.SpoolStillQueued:
+			if time.Since(v.desde) < vigilHasta {
+				quedan = append(quedan, v)
+			} else {
+				log.Printf("trabajo %d: %s lleva dos días en la cola del sistema; se deja de mirar", v.jobID, v.spoolID)
+			}
+		case estado == printer.SpoolCanceled:
+			log.Printf("✗ trabajo %d: lo cancelaron en la cola del sistema (%s)", v.jobID, v.spoolID)
+			if err := r.out.Add(outbox.Entry{JobID: v.jobID, Result: api.Result{WroteSomething: true, Canceled: true, Error: "lo cancelaron en la cola de esa computadora"}, At: time.Now()}); err != nil {
+				log.Println("no se pudo guardar el resultado:", err)
+			}
+			reporto = true
+		default: // salió
+			log.Printf("✓ trabajo %d: al final salió (%s se fue de la cola del sistema)", v.jobID, v.spoolID)
+			if err := r.out.Add(outbox.Entry{JobID: v.jobID, Result: api.Result{OK: true, WroteSomething: true}, At: time.Now()}); err != nil {
+				log.Println("no se pudo guardar el resultado:", err)
+			}
+			reporto = true
+		}
+	}
+	r.vigilMu.Lock()
+	r.vigilados = quedan
+	r.vigilMu.Unlock()
+	if reporto {
+		r.kickFlush()
 	}
 }
 

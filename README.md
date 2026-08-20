@@ -23,11 +23,13 @@ cada vez que entrás a la computadora.
    código. También están en la
    [última versión publicada](https://github.com/eesnaola/manducar-impresion/releases/latest):
    `manducar-impresion-windows-amd64.exe`, `manducar-impresion-mac.zip` (en
-   Mac bajá el zip: al descomprimirlo con doble clic queda el programa listo
-   para abrir) y `manducar-impresion-linux-amd64`.
-2. **Abrirlo** con doble clic. Se abre una ventana y el programa te va
-   guiando. La primera vez el sistema desconfía —el programa todavía no está
-   firmado—: ver [los avisos de la primera vez](#los-avisos-de-la-primera-vez).
+   Mac bajá el zip: al descomprimirlo con doble clic queda «Manducar
+   Impresión», una app lista para abrir) y `manducar-impresion-linux-amd64`.
+2. **Abrirlo.** Si lo abrís con doble clic, te pregunta el código en un cuadro
+   de diálogo del sistema —sin ventana negra en Windows ni Terminal en Mac—; en
+   una terminal, en la terminal. La primera vez el sistema desconfía —el
+   programa todavía no está firmado—: ver
+   [los avisos de la primera vez](#los-avisos-de-la-primera-vez).
 3. **Pegar el código** que muestra el panel.
 
 Con eso queda vinculado, instalado y arrancando solo cada vez que entrás a esa
@@ -37,8 +39,9 @@ y ofrece reinstalarlo, volver a vincularlo o ver el estado.
 ### Si preferís la terminal
 
 Los mismos dos pasos, a mano, parado en la carpeta donde lo bajaste
-(PowerShell en Windows, Terminal en Mac o Linux). En Mac y Linux, antes:
-`chmod +x manducar-impresion`.
+(PowerShell en Windows, Terminal en Mac o Linux). En Linux, antes:
+`chmod +x manducar-impresion`. En Mac el ejecutable está adentro de la app:
+`"Manducar Impresión.app/Contents/MacOS/manducar-impresion"`.
 
 ```
 .\manducar-impresion.exe vincular CODIGO   # Windows
@@ -104,11 +107,15 @@ El ejecutable todavía no tiene firma de código, así que la primera vez el
 sistema avisa. Es esperable, no es un virus.
 
 - **Windows**: aparece un cartel azul, «Windows protegió tu PC» (SmartScreen).
-  Tocá **«Más información»** y después **«Ejecutar de todas formas»**.
-- **Mac**: con doble clic no lo deja abrir. La primera vez andá al archivo,
-  **clic derecho → «Abrir»**, y confirmá en el cartel; de ahí en adelante el
-  doble clic anda. (Si preferís la terminal: `chmod +x manducar-impresion` y
-  después `./manducar-impresion`.)
+  Tocá **«Más información»** y después **«Ejecutar de todas formas»**. Pasado
+  eso, el asistente pregunta en cuadros de diálogo y no queda ninguna ventana
+  negra abierta detrás.
+- **Mac**: dice «Apple no pudo verificar que “Manducar Impresión” no contenga
+  software malicioso». Cerrá el aviso, andá a **Ajustes del Sistema →
+  Privacidad y seguridad**, bajá hasta el final y tocá **«Abrir de todos
+  modos»** (pide la contraseña); después abrilo de nuevo y de ahí en adelante
+  el doble clic anda. (Equivalente en la terminal:
+  `xattr -dr com.apple.quarantine "Manducar Impresión.app"`.)
 - **Linux**: `chmod +x manducar-impresion` y abrilo desde una terminal.
 
 ## Volver a vincular

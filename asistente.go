@@ -5,9 +5,17 @@ package main
 // Todo lo que hace de verdad —vincular, instalar— es lo mismo que hacen los
 // comandos: acá sólo se pregunta el código, se lo valida y se cuenta en
 // castellano qué pasó.
+//
+// Los pasos son unos solos; por dónde se habla, no. En una terminal se
+// pregunta y se contesta en la terminal; abierto de un doble clic no hay
+// ninguna, así que se pregunta y se cuenta con los cuadros de diálogo del
+// sistema (dialogos.go). Eso es la interfaz `ui` de acá abajo: la consola es
+// una implementación, los cuadros son la otra, y el asistente —el que vincula
+// e instala— no sabe cuál le tocó.
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -29,15 +37,24 @@ import (
 // con el panel delante que seguir preguntando.
 const maxIntentos = 3
 
-// cmdAsistente es el asistente contra la terminal de verdad. Es lo que corre
-// un doble clic y lo que corre `asistente`.
-func cmdAsistente(args []string) int {
+// dondeEstaElCodigo es lo último que se dice cuando se deja de preguntar: sin
+// esto, el que abrió el programa antes de tener el código se queda sin saber
+// adónde ir a buscarlo.
+const dondeEstaElCodigo = "El código lo muestra el panel en Configuraciones → Impresión → «Vincular una computadora», y vence a los diez minutos. Abrí este programa de nuevo cuando lo tengas a mano."
+
+// cmdAsistente es el asistente: lo que corre un doble clic y lo que corre
+// `asistente`. comando es con qué lo llamaron —vacío si no le pasaron nada—,
+// que es la mitad de la pregunta de si hay alguien mirando una terminal o no.
+func cmdAsistente(args []string, comando string) int {
 	servidor, err := wizardServer(args)
 	if err != nil {
 		if !errors.Is(err, flag.ErrHelp) {
 			fmt.Fprintln(os.Stderr, err)
 		}
 		return 2
+	}
+	if u := uiDeCuadros(comando); u != nil {
+		return asistirCon(u, servidor)
 	}
 	return asistir(os.Stdin, os.Stdout, servidor)
 }
@@ -63,23 +80,69 @@ func wizardServer(args []string) (string, error) {
 	return defaultServer, nil
 }
 
-// asistir es el asistente entero, con la entrada, la salida y el servidor
-// contra el que vincula por parámetro: así el test lo maneja con un par de
-// cadenas y un httptest.Server.
+// ui es por dónde habla el asistente. Los pasos son los mismos de los dos
+// lados; lo que cambia es cuánto se puede contar sin hacerle cerrar una
+// ventana a nadie, y por eso hay más de un verbo para «decir algo».
+type ui interface {
+	// decir es la narración: en una terminal son renglones que se leen al
+	// pasar. En cuadros de diálogo no existe —cada renglón sería una ventana
+	// más que cerrar—, así que ahí se pierde a propósito. Nada de lo que va
+	// por acá es imprescindible.
+	decir(lineas ...string)
+	// avisar es lo que sí hay que leer: un renglón en la terminal, una
+	// ventana en los cuadros.
+	avisar(lineas ...string)
+	// fallar es avisar de algo que salió mal. En la terminal es lo mismo que
+	// avisar; en un cuadro cambia el ícono, que es lo único que distingue una
+	// buena noticia de una mala cuando no hay contexto alrededor.
+	fallar(lineas ...string)
+	// preguntar pide un dato. El false es que no hay más entrada —la ventana
+	// se cerró, la persona canceló, el programa corre con la entrada
+	// redirigida—: ahí el asistente termina en vez de preguntarle al vacío.
+	preguntar(pregunta string) (string, bool)
+	// reintentar cuenta por qué algo no salió y pregunta si se prueba de
+	// nuevo. Las dos cosas van juntas porque en un cuadro son una sola
+	// ventana: el motivo arriba y los botones abajo.
+	reintentar(motivo []string) bool
+	// elegir es qué hacer con una computadora que ya está vinculada.
+	// Devuelve la opción del menú: "1" instalar, "2" volver a vincular, "3"
+	// ver el estado, "" salir sin tocar nada. En la terminal entra el menú
+	// entero; en un cuadro, que sólo sabe preguntar sí o no, entra la única
+	// pregunta que le importa al que lo abrió.
+	elegir(e estadoInfo) string
+	// listo es cómo se cuenta que quedó todo hecho.
+	listo(local, log string)
+	// cerrar es lo último, y en la consola es lo que evita que la ventana se
+	// cierre antes de que alguien alcance a leerla.
+	cerrar()
+}
+
+// asistir es el asistente por la terminal, con la entrada, la salida y el
+// servidor contra el que vincula por parámetro: así el test lo maneja con un
+// par de cadenas y un httptest.Server.
 func asistir(in io.Reader, out io.Writer, servidor string) int {
-	a := &asistente{in: bufio.NewReader(in), out: out, servidor: servidor}
-	a.presentacion()
+	return asistirCon(&consola{in: bufio.NewReader(in), out: out}, servidor)
+}
+
+// asistirCon son los pasos, sin importar por dónde se hable.
+func asistirCon(u ui, servidor string) int {
+	a := &asistente{u: u, servidor: servidor}
+	a.u.decir(
+		"Manducar — impresión",
+		"Este programa imprime las comandas y los tickets de tu local en las impresoras de esta computadora, aunque el navegador esté cerrado.",
+		"",
+	)
 	e := estado()
 	switch {
 	case e.Err != nil:
-		a.decir("No pude averiguar dónde guarda esta computadora su configuración: " + e.Err.Error())
+		a.u.fallar("No pude averiguar dónde guarda esta computadora su configuración: " + e.Err.Error())
 		a.fallo = true
 	case e.Vinculado:
 		a.menu(e)
 	default:
 		a.desdeCero()
 	}
-	a.despedida()
+	a.u.cerrar()
 	if a.fallo {
 		return 1
 	}
@@ -87,8 +150,7 @@ func asistir(in io.Reader, out io.Writer, servidor string) int {
 }
 
 type asistente struct {
-	in  *bufio.Reader
-	out io.Writer
+	u ui
 	// servidor es contra qué servidor vincula: manduc.ar salvo que se haya
 	// pedido otro con --servidor o con la variable de entorno. La persona no
 	// lo elige: el asistente ya no pregunta la dirección del local.
@@ -100,20 +162,28 @@ type asistente struct {
 	ultimo pairInfo
 }
 
-func (a *asistente) decir(lineas ...string) {
+// consola es la ui de siempre: la terminal.
+type consola struct {
+	in  *bufio.Reader
+	out io.Writer
+}
+
+func (c *consola) decir(lineas ...string) {
 	for _, l := range lineas {
-		fmt.Fprintln(a.out, l)
+		fmt.Fprintln(c.out, l)
 	}
 }
 
-// preguntar escribe la pregunta y espera la respuesta. El false es que no hay
-// más entrada —la ventana se cerró, o el programa corre con la entrada
-// redirigida—: ahí el asistente termina en vez de preguntarle al vacío.
-func (a *asistente) preguntar(pregunta string) (string, bool) {
-	fmt.Fprintf(a.out, "%s ", pregunta)
-	linea, err := a.in.ReadString('\n')
+// En la terminal no hay diferencia entre contar algo al pasar y contar algo
+// que hay que leer: es el mismo renglón. La diferencia la hacen los cuadros.
+func (c *consola) avisar(lineas ...string) { c.decir(lineas...) }
+func (c *consola) fallar(lineas ...string) { c.decir(lineas...) }
+
+func (c *consola) preguntar(pregunta string) (string, bool) {
+	fmt.Fprintf(c.out, "%s ", pregunta)
+	linea, err := c.in.ReadString('\n')
 	if err != nil && strings.TrimSpace(linea) == "" {
-		fmt.Fprintln(a.out)
+		fmt.Fprintln(c.out)
 		return "", false
 	}
 	return strings.TrimSpace(linea), true
@@ -121,8 +191,8 @@ func (a *asistente) preguntar(pregunta string) (string, bool) {
 
 // confirmar es la pregunta de sí o no. Por default sí: se la hace justo
 // después de que algo salió mal, y ahí lo que se quiere es reintentar.
-func (a *asistente) confirmar(pregunta string) bool {
-	r, ok := a.preguntar(pregunta + " [S/n]")
+func (c *consola) confirmar(pregunta string) bool {
+	r, ok := c.preguntar(pregunta + " [S/n]")
 	if !ok {
 		return false
 	}
@@ -134,48 +204,13 @@ func (a *asistente) confirmar(pregunta string) bool {
 	}
 }
 
-func (a *asistente) presentacion() {
-	a.decir(
-		"Manducar — impresión",
-		"Este programa imprime las comandas y los tickets de tu local en las impresoras de esta computadora, aunque el navegador esté cerrado.",
-		"",
-	)
+func (c *consola) reintentar(motivo []string) bool {
+	c.decir(motivo...)
+	return c.confirmar("¿Probamos de nuevo?")
 }
 
-// despedida: en Windows el doble clic abre una ventana que se cierra sola
-// apenas el programa termina. Si no la frenamos, todo lo que acabamos de
-// escribir se ve un cuarto de segundo. Con la entrada redirigida —un script,
-// el test— no hay a quién esperar.
-func (a *asistente) despedida() {
-	a.decir("", "Podés cerrar esta ventana.")
-	if !esTerminal() {
-		return
-	}
-	fmt.Fprint(a.out, "(apretá Enter para salir) ")
-	_, _ = a.in.ReadString('\n')
-}
-
-// esTerminal dice si del otro lado hay una persona en una consola. Variable
-// para que el test no dependa de con qué entrada lo corrieron.
-var esTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
-
-// desdeCero es la primera vez: esta computadora no está vinculada a nada.
-func (a *asistente) desdeCero() {
-	a.decir(
-		"Vamos a vincular esta computadora con tu local.",
-		"Tené abierto el panel de Manducar en Configuraciones → Impresión → «Vincular una computadora»: ahí está el código.",
-		"",
-	)
-	if !a.pasoVincular() {
-		return
-	}
-	a.decir("")
-	a.pasoInstalar()
-}
-
-// menu es lo que ve el que la abre de nuevo, con la computadora ya vinculada.
-func (a *asistente) menu(e estadoInfo) {
-	a.decir(
+func (c *consola) elegir(e estadoInfo) string {
+	c.decir(
 		fmt.Sprintf("Esta computadora ya está vinculada a «%s» (agente %d).", e.Local, e.AgentID),
 		"",
 		"  [1] Instalar o reinstalar para que arranque solo",
@@ -184,17 +219,62 @@ func (a *asistente) menu(e estadoInfo) {
 		"  [Enter] salir",
 		"",
 	)
-	op, ok := a.preguntar("¿Qué querés hacer?")
+	op, ok := c.preguntar("¿Qué querés hacer?")
 	if !ok {
+		return ""
+	}
+	c.decir("")
+	return op
+}
+
+func (c *consola) listo(_, log string) {
+	c.decir(
+		"",
+		"Listo: el agente arranca solo cada vez que entrás a esta computadora.",
+		"Lo que va haciendo queda en "+log+".",
+		"Ya podés borrar el archivo que bajaste: el que manda es el que quedó instalado.",
+	)
+}
+
+// cerrar: en Windows el doble clic abre una ventana que se cierra sola apenas
+// el programa termina. Si no la frenamos, todo lo que acabamos de escribir se
+// ve un cuarto de segundo. Con la entrada redirigida —un script, el test— no
+// hay a quién esperar.
+func (c *consola) cerrar() {
+	c.decir("", "Podés cerrar esta ventana.")
+	if !esTerminal() {
 		return
 	}
-	a.decir("")
-	switch op {
+	fmt.Fprint(c.out, "(apretá Enter para salir) ")
+	_, _ = c.in.ReadString('\n')
+}
+
+// esTerminal dice si del otro lado hay una persona en una consola. Variable
+// para que el test no dependa de con qué entrada lo corrieron.
+var esTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+
+// desdeCero es la primera vez: esta computadora no está vinculada a nada.
+func (a *asistente) desdeCero() {
+	a.u.decir(
+		"Vamos a vincular esta computadora con tu local.",
+		"Tené abierto el panel de Manducar en Configuraciones → Impresión → «Vincular una computadora»: ahí está el código.",
+		"",
+	)
+	if !a.pasoVincular() {
+		return
+	}
+	a.u.decir("")
+	a.pasoInstalar()
+}
+
+// menu es lo que ve el que la abre de nuevo, con la computadora ya vinculada.
+func (a *asistente) menu(e estadoInfo) {
+	switch op := a.u.elegir(e); op {
 	case "1":
 		// El servicio del sistema se toca con permisos, y el asistente corre
 		// sin ninguno: mejor decirlo que fallar a la mitad.
 		if e.Modo == config.ModeSystem {
-			a.decir("Acá el agente está instalado como servicio del sistema, y eso se toca con permisos de administrador: desde una terminal, «sudo manducar-impresion instalar --sistema» (o la terminal como administrador, en Windows).")
+			a.u.avisar("Acá el agente está instalado como servicio del sistema, y eso se toca con permisos de administrador: desde una terminal, «sudo manducar-impresion instalar --sistema» (o la terminal como administrador, en Windows).")
 			return
 		}
 		a.pasoInstalar()
@@ -203,50 +283,56 @@ func (a *asistente) menu(e estadoInfo) {
 			return
 		}
 		if a.ultimo.Restarted {
-			a.decir("", "El agente que ya estaba corriendo tomó el vínculo nuevo.")
+			a.u.avisar("", "El agente que ya estaba corriendo tomó el vínculo nuevo.")
 			return
 		}
-		a.decir("")
+		a.u.decir("")
 		a.pasoInstalar()
 	case "3":
-		printEstado(a.out, estado())
+		a.u.avisar(estadoLineas(estado())...)
 	case "":
 		// Enter: no toca nada y se va.
 	default:
-		a.decir(fmt.Sprintf("No entendí «%s»: era 1, 2, 3 o Enter. Abrí el programa de nuevo.", op))
+		a.u.avisar(fmt.Sprintf("No entendí «%s»: era 1, 2, 3 o Enter. Abrí el programa de nuevo.", op))
 	}
 }
 
 // pasoVincular pregunta el código y vincula contra a.servidor. Si algo sale
 // mal, lo cuenta y ofrece empezar de nuevo: el código vence a los diez
 // minutos, así que reintentar es pedirle uno nuevo al panel, no repetir el
-// mismo.
+// mismo. A la tercera se deja de ofrecer: el que vincula mal tres veces no
+// tiene el código a mano, y lo que le sirve es saber dónde está.
 func (a *asistente) pasoVincular() bool {
-	for {
+	for intento := 1; ; intento++ {
 		code, ok := a.pedirCodigo()
 		if !ok {
 			a.fallo = true
 			return false
 		}
-		a.decir("", "Vinculando…")
-		info, err := pair(a.out, a.servidor, code, defaultName())
+		a.u.decir("", "Vinculando…")
+		w := &renglones{u: a.u}
+		info, err := pair(w, a.servidor, code, defaultName())
+		w.cerrar()
 		if err == nil {
 			a.ultimo = info
 			return true
 		}
-		a.decir("")
-		a.decir(explicarVinculo(err)...)
-		if !a.confirmar("¿Probamos de nuevo?") {
+		if intento == maxIntentos {
+			a.u.avisar(append(explicarVinculo(err), dondeEstaElCodigo)...)
 			a.fallo = true
 			return false
 		}
-		a.decir("")
+		if !a.u.reintentar(append([]string{""}, explicarVinculo(err)...)) {
+			a.fallo = true
+			return false
+		}
+		a.u.decir("")
 	}
 }
 
 func (a *asistente) pedirCodigo() (string, bool) {
 	for intento := 1; ; intento++ {
-		linea, ok := a.preguntar("Pegá el código que muestra el panel:")
+		linea, ok := a.u.preguntar("Pegá el código que muestra el panel:")
 		if !ok {
 			return "", false
 		}
@@ -254,11 +340,11 @@ func (a *asistente) pedirCodigo() (string, bool) {
 		if err == nil {
 			return code, true
 		}
-		a.decir(enCastellano(err))
 		if intento == maxIntentos {
-			a.decir("El código lo muestra el panel en Configuraciones → Impresión → «Vincular una computadora», y vence a los diez minutos. Abrí este programa de nuevo cuando lo tengas a mano.")
+			a.u.avisar(enCastellano(err), dondeEstaElCodigo)
 			return "", false
 		}
+		a.u.avisar(enCastellano(err))
 	}
 }
 
@@ -266,23 +352,26 @@ func (a *asistente) pedirCodigo() (string, bool) {
 // suyo por su cuenta y decir dos veces lo mismo confunde a cualquiera.
 func (a *asistente) pasoInstalar() bool {
 	for {
-		a.decir("Dejando el agente instalado para que arranque solo…")
+		a.u.decir("Dejando el agente instalado para que arranque solo…")
 		if err := a.instalar(); err == nil {
-			a.decir(
-				"",
-				"Listo: el agente arranca solo cada vez que entrás a esta computadora.",
-				"Lo que va haciendo queda en "+estado().Log+".",
-				"Ya podés borrar el archivo que bajaste: el que manda es el que quedó instalado.",
-			)
+			a.u.listo(a.local(), estado().Log)
 			return true
 		}
-		a.decir("", "No se pudo dejar el agente arrancando solo; unas líneas más arriba está el detalle.")
-		if !a.confirmar("¿Probamos de nuevo?") {
+		if !a.u.reintentar([]string{"", "No se pudo dejar el agente arrancando solo en esta computadora."}) {
 			a.fallo = true
 			return false
 		}
-		a.decir("")
+		a.u.decir("")
 	}
+}
+
+// local es a qué local quedó atada esta computadora: el del vínculo que se
+// acaba de hacer, o el que ya estaba guardado si no se vinculó nada.
+func (a *asistente) local() string {
+	if a.ultimo.Store != "" {
+		return a.ultimo.Store
+	}
+	return estado().Local
 }
 
 // instalar es `instalar` sin permisos, con dos diferencias: los avisos de svc
@@ -300,6 +389,35 @@ func (a *asistente) instalar() error {
 		}
 	}
 	return installAgent()
+}
+
+// renglones es adónde escribe `pair` sus avisos. Son narración —«listo, quedó
+// vinculada a…»—, así que van por decir: renglones en la terminal, nada en un
+// cuadro. Se junta hasta el fin de renglón porque la ui habla de a renglones
+// enteros y un io.Writer puede venir cortado por cualquier lado.
+type renglones struct {
+	u     ui
+	resto []byte
+}
+
+func (r *renglones) Write(p []byte) (int, error) {
+	r.resto = append(r.resto, p...)
+	for {
+		i := bytes.IndexByte(r.resto, '\n')
+		if i < 0 {
+			return len(p), nil
+		}
+		r.u.decir(string(r.resto[:i]))
+		r.resto = r.resto[i+1:]
+	}
+}
+
+// cerrar suelta lo que haya quedado sin su fin de renglón.
+func (r *renglones) cerrar() {
+	if len(r.resto) > 0 {
+		r.u.decir(string(r.resto))
+		r.resto = nil
+	}
 }
 
 // parseCode se queda con los ocho dígitos del panel, como los pegue la
@@ -452,20 +570,33 @@ func cmdEstado(w io.Writer) int {
 }
 
 func printEstado(w io.Writer, e estadoInfo) {
+	for _, l := range estadoLineas(e) {
+		fmt.Fprintln(w, l)
+	}
+}
+
+// estadoLineas es el cuadro de estado, renglón por renglón: lo escribe
+// `estado` por la salida, y el asistente lo muestra como está —en la terminal,
+// o adentro de una ventana— sin volver a armarlo.
+func estadoLineas(e estadoInfo) []string {
 	if e.Err != nil {
-		fmt.Fprintln(w, "No pude averiguar dónde guarda esta computadora su configuración:", e.Err)
-		return
+		return []string{"No pude averiguar dónde guarda esta computadora su configuración: " + e.Err.Error()}
 	}
+	var l []string
 	if e.Vinculado {
-		fmt.Fprintf(w, "Local:          %s (agente %d)\n", e.Local, e.AgentID)
-		fmt.Fprintf(w, "Servidor:       %s\n", e.Server)
+		l = append(l,
+			fmt.Sprintf("Local:          %s (agente %d)", e.Local, e.AgentID),
+			fmt.Sprintf("Servidor:       %s", e.Server),
+		)
 	} else {
-		fmt.Fprintln(w, "Esta computadora todavía no está vinculada a ningún local.")
+		l = append(l, "Esta computadora todavía no está vinculada a ningún local.")
 	}
-	fmt.Fprintf(w, "Modo:           %s\n", enPalabras(e.Modo))
-	fmt.Fprintf(w, "Arranca solo:   %s\n", arrancaSolo(e.Instalado))
-	fmt.Fprintf(w, "Configuración:  %s\n", e.Config)
-	fmt.Fprintf(w, "Log:            %s\n", e.Log)
+	return append(l,
+		fmt.Sprintf("Modo:           %s", enPalabras(e.Modo)),
+		fmt.Sprintf("Arranca solo:   %s", arrancaSolo(e.Instalado)),
+		fmt.Sprintf("Configuración:  %s", e.Config),
+		fmt.Sprintf("Log:            %s", e.Log),
+	)
 }
 
 func enPalabras(modo string) string {

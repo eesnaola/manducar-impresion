@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- El paquete .app de Mac: con él, el doble clic no abre la Terminal y el
+	     asistente pregunta el código en un cuadro del sistema. Adentro va el
+	     mismo binario manducar-impresion que baja el agente para actualizarse. -->
+	<key>CFBundleName</key>
+	<string>Manducar Impresión</string>
+	<key>CFBundleDisplayName</key>
+	<string>Manducar Impresión</string>
+	<key>CFBundleExecutable</key>
+	<string>manducar-impresion</string>
+	<key>CFBundleIdentifier</key>
+	<string>ar.manduc.impresion</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>__VERSION__</string>
+	<key>CFBundleVersion</key>
+	<string>__VERSION__</string>
+	<key>CFBundleIconFile</key>
+	<string>manducar</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<!-- Sin ícono en el Dock: el asistente no tiene ventanas propias, las pide
+	     prestadas a osascript. -->
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>MIT — manduc.ar</string>
+</dict>
+</plist>

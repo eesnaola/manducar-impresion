@@ -1,0 +1,40 @@
+# El agente entero (Run) contra el spooler REAL de Windows: una impresora
+# «Generic / Text Only» que escribe a un archivo hace de térmica. Es lo único
+# que ve andar en Windows la verificación del spooler, el vigilante y los
+# cancelados — acá se programaron sin una máquina Windows a mano.
+#
+# El test tarda unos minutos a propósito: espera los 10 s de la verificación
+# y las vueltas de 30 s del vigilante, con el spooler pausándose y
+# reanudándose como lo haría una impresora trabada.
+name: windows-e2e
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  spooler:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        # Pinneada como en release.yml: mismo compilador siempre.
+        with: { go-version: '1.23.x', check-latest: false }
+      - name: Impresora de prueba (Generic / Text Only a un archivo)
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\e2e | Out-Null
+          Add-PrinterPort -Name 'C:\e2e\salida.prn'
+          Add-Printer -Name 'ManducarE2E' -DriverName 'Generic / Text Only' -PortName 'C:\e2e\salida.prn'
+          Get-Printer -Name 'ManducarE2E' | Format-List Name, DriverName, PortName
+      - name: E2E contra el spooler
+        shell: powershell
+        env:
+          MANDUCAR_E2E_PRINTER: ManducarE2E
+          MANDUCAR_E2E_ARCHIVO: C:\e2e\salida.prn
+        run: go test -tags windowse2e -run TestE2EWindowsSpooler -v -timeout 15m ./internal/runner/
+      - name: La cola del spooler, si algo falló
+        if: failure()
+        shell: powershell
+        run: |
+          Get-PrintJob -PrinterName 'ManducarE2E' | Format-List
+          Get-CimInstance Win32_Printer -Filter "Name='ManducarE2E'" | Format-List Name, PrinterStatus, ExtendedPrinterStatus
+          if (Test-Path C:\e2e\salida.prn) { Get-Content C:\e2e\salida.prn | Select-Object -First 20 }

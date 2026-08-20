@@ -37,10 +37,11 @@ const envServidor = "MANDUCAR_IMPRESION_SERVIDOR"
 
 func main() {
 	if len(os.Args) < 2 {
-		// Sin argumentos es lo que hace un doble clic: se abrió una ventana y
-		// hay alguien mirándola, no una línea de comandos que alguien sepa
-		// escribir. Ahí va el asistente, no la lista de comandos.
-		os.Exit(cmdAsistente(nil))
+		// Sin argumentos es lo que hace un doble clic: hay alguien mirando una
+		// pantalla, no una línea de comandos que alguien sepa escribir. Ahí va
+		// el asistente —en cuadros de diálogo o en la terminal, según lo que
+		// haya del otro lado—, y no la lista de comandos.
+		os.Exit(cmdAsistente(nil, ""))
 	}
 	// `--sistema` vale para vincular, instalar y desinstalar, y puede venir en
 	// cualquier lugar de la línea: se lo saca acá, una vez, antes de que cada
@@ -49,7 +50,7 @@ func main() {
 	config.UseSystem(sistema)
 	switch os.Args[1] {
 	case "asistente":
-		os.Exit(cmdAsistente(args))
+		os.Exit(cmdAsistente(args, os.Args[1]))
 	case "vincular":
 		os.Exit(cmdPair(args, sistema))
 	case "correr":

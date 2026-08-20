@@ -118,8 +118,8 @@ func TestVbsStringDoublesTheQuotes(t *testing.T) {
 		``:            `""`,
 	}
 	for in, quiero := range casos {
-		if got := vbsString(in); got != quiero {
-			t.Errorf("vbsString(%q) = %q, quería %q", in, got, quiero)
+		if got := VBSString(in); got != quiero {
+			t.Errorf("VBSString(%q) = %q, quería %q", in, got, quiero)
 		}
 	}
 }

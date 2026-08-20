@@ -2,6 +2,7 @@ package printer
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"testing"
@@ -76,3 +77,26 @@ func TestSystemPrinterThatDoesNotExistIsRetryable(t *testing.T) {
 		t.Fatalf("%+v", out)
 	}
 }
+
+func TestMotivoDeRedHablaEnCristiano(t *testing.T) {
+	casos := map[string]string{
+		"dial tcp 192.168.0.50:9100: connect: connection refused": "rechazó la conexión (¿está apagada, o no es el puerto 9100?)",
+		"dial tcp 192.168.0.50:9100: connect: no route to host":   "no hay camino hasta esa dirección (¿está en la misma red?)",
+		"dial tcp: lookup cocina: no such host":                   "no se encontró ese nombre en la red",
+		"algo raro":                                               "algo raro",
+	}
+	for crudo, esperado := range casos {
+		if got := motivoDeRed(errors.New(crudo)); got != esperado {
+			t.Errorf("%q → %q, esperaba %q", crudo, got, esperado)
+		}
+	}
+	if got := motivoDeRed(timeoutErr{}); got != "no responde (¿está apagada o en otra red?)" {
+		t.Errorf("timeout → %q", got)
+	}
+}
+
+type timeoutErr struct{}
+
+func (timeoutErr) Error() string   { return "i/o timeout" }
+func (timeoutErr) Timeout() bool   { return true }
+func (timeoutErr) Temporary() bool { return true }

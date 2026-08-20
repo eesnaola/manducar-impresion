@@ -67,4 +67,7 @@ type Result struct {
 	OK             bool   `json:"ok"`
 	Error          string `json:"error,omitempty"`
 	WroteSomething bool   `json:"wroteSomething"`
+	// Canceled: el trabajo se fue de la cola del sistema porque alguien lo
+	// canceló ahí (no salió ni va a salir).
+	Canceled bool `json:"canceled,omitempty"`
 }

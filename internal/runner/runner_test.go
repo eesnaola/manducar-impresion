@@ -883,3 +883,51 @@ func TestARepairedTokenIsPickedUpWithoutRestarting(t *testing.T) {
 		t.Fatal("Run no volvió al cancelar el contexto")
 	}
 }
+
+// El vigilante: un trabajo trabado en el spooler que al final sale se reporta
+// como impreso; el que sigue trabado se sigue mirando; el más viejo que
+// vigilHasta se suelta.
+func TestVigilanteReportaElQueAlFinalSalio(t *testing.T) {
+	r := testRunner(t, "http://127.0.0.1:0")
+	estados := map[string]printer.SpoolState{"Dummy-1": printer.SpoolStillQueued, "Dummy-2": printer.SpoolPrinted, "Dummy-4": printer.SpoolCanceled}
+	falla := errors.New("spooler mudo")
+	r.spool = func(_ context.Context, name, id string) (printer.SpoolState, error) {
+		if id == "Dummy-3" {
+			return printer.SpoolStillQueued, falla
+		}
+		return estados[id], nil
+	}
+	r.vigilar(41, "Dummy_Ticket", "Dummy-1")
+	r.vigilar(42, "Dummy_Ticket", "Dummy-2")
+	r.vigilar(43, "Dummy_Ticket", "Dummy-3")
+	r.vigilar(44, "Dummy_Ticket", "Dummy-4")
+	// El 43 es viejo y su consulta falla: a vigilHasta se lo suelta.
+	r.vigilMu.Lock()
+	r.vigilados[2].desde = time.Now().Add(-vigilHasta - time.Minute)
+	r.vigilMu.Unlock()
+
+	r.vigilarUnaVuelta(context.Background())
+
+	// El 42 salió (OK) y el 44 fue cancelado (canceled, sin OK).
+	var oks, cancelados []int
+	for _, e := range r.out.Pending() {
+		if e.Result.OK {
+			oks = append(oks, e.JobID)
+		}
+		if e.Result.Canceled {
+			cancelados = append(cancelados, e.JobID)
+		}
+	}
+	if len(oks) != 1 || oks[0] != 42 {
+		t.Fatalf("impresos: %v", oks)
+	}
+	if len(cancelados) != 1 || cancelados[0] != 44 {
+		t.Fatalf("cancelados: %v", cancelados)
+	}
+	// El 41 sigue vigilado; el 43 se soltó.
+	r.vigilMu.Lock()
+	defer r.vigilMu.Unlock()
+	if len(r.vigilados) != 1 || r.vigilados[0].jobID != 41 {
+		t.Fatalf("vigilados: %+v", r.vigilados)
+	}
+}
