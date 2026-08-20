@@ -31,7 +31,7 @@ func writeSystem(ctx context.Context, name string, payload []byte) Outcome {
 	defer p.Close()
 	doc := fmt.Sprintf("Manducar %d-%d", os.Getpid(), atomic.AddUint64(&docSeq, 1))
 	if err := p.StartRawDocument(doc); err != nil {
-		return Outcome{Err: fmt.Errorf("«%s»: %w", name, err)}
+		return Outcome{Err: fmt.Errorf("«%s»: el spooler no aceptó abrir el documento (RAW): %w", name, err)}
 	}
 	// A partir de acá el spooler ya tiene un trabajo abierto: aunque el
 	// primer Write falle con 0 bytes escritos, ese trabajo ya existe y no
@@ -47,7 +47,7 @@ func writeSystem(ctx context.Context, name string, payload []byte) Outcome {
 		}
 	}
 	if err := p.EndDocument(); err != nil {
-		return Outcome{WroteSomething: true, Err: fmt.Errorf("«%s»: %w", name, err)}
+		return Outcome{WroteSomething: true, Err: fmt.Errorf("«%s»: el spooler no aceptó cerrar el documento: %w", name, err)}
 	}
 
 	// Que el spooler lo haya aceptado no es que haya salido: con la impresora

@@ -38,6 +38,8 @@ jobs:
         shell: powershell
         run: |
           Get-PrinterDriver | Format-Table Name
+          Get-Printer -Name 'ManducarE2E' -Full | Format-List *
+          Get-PrintProcessor | Format-Table Name
           Get-PrintJob -PrinterName 'ManducarE2E' | Format-List
           Get-CimInstance Win32_Printer -Filter "Name='ManducarE2E'" | Format-List Name, PrinterStatus, ExtendedPrinterStatus
           if (Test-Path C:\e2e\salida.prn) { Get-Content C:\e2e\salida.prn | Select-Object -First 20 }

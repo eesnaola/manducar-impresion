@@ -25,9 +25,35 @@ import (
 	"testing"
 	"time"
 
+	winprinter "github.com/alexbrainman/printer"
+
 	"github.com/eesnaola/manducar-impresion/internal/api"
 	"github.com/eesnaola/manducar-impresion/internal/config"
 )
+
+// sondaDatatypes prueba a mano qué acepta el spooler para esta impresora:
+// es el diagnóstico para cuando el camino RAW falla en el runner y no hay
+// una máquina Windows donde mirarlo.
+func sondaDatatypes(t *testing.T, impresora string) {
+	t.Helper()
+	for _, dt := range []string{"RAW", "TEXT"} {
+		p, err := winprinter.Open(impresora)
+		if err != nil {
+			t.Logf("sonda: Open: %v", err)
+			return
+		}
+		err = p.StartDocument("sonda "+dt, dt)
+		if err != nil {
+			t.Logf("sonda: StartDocument(%s): %v", dt, err)
+			p.Close()
+			continue
+		}
+		_, werr := p.Write([]byte("sonda " + dt + "\r\n"))
+		eerr := p.EndDocument()
+		t.Logf("sonda: %s → start ok, write %v, end %v", dt, werr, eerr)
+		p.Close()
+	}
+}
 
 // servidorE2E reparte trabajos de a uno y anota todo lo que el agente reporta.
 type servidorE2E struct {
@@ -144,6 +170,8 @@ func TestE2EWindowsSpooler(t *testing.T) {
 		n, _ := strconv.Atoi(out)
 		return n
 	}
+
+	sondaDatatypes(t, impresora)
 
 	srv := &servidorE2E{reportado: map[int][]api.Result{}}
 	web := httptest.NewServer(srv.handler())
