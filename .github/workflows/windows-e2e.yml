@@ -22,6 +22,8 @@ jobs:
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path C:\e2e | Out-Null
+          # El runner trae el driver en el driver store pero sin instalar.
+          Add-PrinterDriver -Name 'Generic / Text Only'
           Add-PrinterPort -Name 'C:\e2e\salida.prn'
           Add-Printer -Name 'ManducarE2E' -DriverName 'Generic / Text Only' -PortName 'C:\e2e\salida.prn'
           Get-Printer -Name 'ManducarE2E' | Format-List Name, DriverName, PortName
@@ -35,6 +37,7 @@ jobs:
         if: failure()
         shell: powershell
         run: |
+          Get-PrinterDriver | Format-Table Name
           Get-PrintJob -PrinterName 'ManducarE2E' | Format-List
           Get-CimInstance Win32_Printer -Filter "Name='ManducarE2E'" | Format-List Name, PrinterStatus, ExtendedPrinterStatus
           if (Test-Path C:\e2e\salida.prn) { Get-Content C:\e2e\salida.prn | Select-Object -First 20 }
