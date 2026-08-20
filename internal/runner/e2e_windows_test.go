@@ -11,6 +11,7 @@ package runner
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -249,4 +250,86 @@ func TestE2EWindowsSpooler(t *testing.T) {
 		t.Fatal("Run no terminó tras cancelar el contexto")
 	}
 	fmt.Println("E2E completo")
+}
+
+// La autoactualización, con el binario REAL como proceso aparte: el latido
+// anuncia una versión nueva servida por el test, el agente la baja, verifica
+// el sha256, se reemplaza a sí mismo y rearranca ya siendo la nueva. Es el
+// camino que en Windows tiene sus propias mañas (un .exe corriendo no se
+// puede borrar) y que hasta acá sólo se había visto andar en Mac.
+func TestE2EWindowsAutoactualizacion(t *testing.T) {
+	dir := t.TempDir()
+	raiz, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	vieja := filepath.Join(dir, "agente.exe")
+	nueva := filepath.Join(dir, "nueva.exe")
+	for bin, version := range map[string]string{vieja: "0.0.1-e2e", nueva: "0.0.2-e2e"} {
+		cmd := exec.Command("go", "build", "-trimpath", "-ldflags", "-X main.Version="+version, "-o", bin, ".")
+		cmd.Dir = raiz
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("go build %s: %v\n%s", version, err, out)
+		}
+	}
+	nuevaBytes, err := os.ReadFile(nueva)
+	if err != nil {
+		t.Fatal(err)
+	}
+	suma := sha256.Sum256(nuevaBytes)
+
+	var web *httptest.Server
+	web = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/agente/latido":
+			fmt.Fprintf(w, `{"mercure":{"url":"http://127.0.0.1:1/.well-known/mercure","jwt":"j","topic":"t"},"agent":{"version":"0.0.2-e2e","sha256":"%x","url":"%s/descarga"},"jobsPending":0,"heartbeatSeconds":5}`, suma, web.URL)
+		case r.URL.Path == "/descarga":
+			_, _ = w.Write(nuevaBytes)
+		case r.URL.Path == "/agente/trabajos":
+			_, _ = w.Write([]byte(`{"jobs":[]}`))
+		default:
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
+	}))
+	defer web.Close()
+
+	cfg := filepath.Join(dir, "impresion.json")
+	t.Setenv("MANDUCAR_IMPRESION_CONFIG", cfg)
+	if err := config.Save(config.Config{Server: web.URL, Token: "tok", AgentID: 1, Store: "E2E"}); err != nil {
+		t.Fatal(err)
+	}
+
+	salida, err := os.Create(filepath.Join(dir, "salida.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer salida.Close()
+	agente := exec.Command(vieja, "correr")
+	agente.Env = append(os.Environ(), "MANDUCAR_IMPRESION_CONFIG="+cfg)
+	agente.Stdout = salida
+	agente.Stderr = salida
+	if err := agente.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = agente.Process.Kill() }()
+
+	// El primer latido anuncia la nueva; el agente baja, verifica, se pisa y
+	// rearranca. La prueba de vida es el renglón de arranque con la versión
+	// nueva en el MISMO log.
+	esperar(t, 120*time.Second, "el rearranque como 0.0.2-e2e", func() bool {
+		b, err := os.ReadFile(filepath.Join(dir, "salida.log"))
+		return err == nil && strings.Contains(string(b), "manducar-impresion 0.0.2-e2e")
+	})
+	b, _ := os.ReadFile(filepath.Join(dir, "salida.log"))
+	if !strings.Contains(string(b), "actualizado a 0.0.2-e2e") {
+		t.Fatalf("no quedó el rastro de la actualización:\n%s", b)
+	}
+	// Y el archivo del agente ES el binario nuevo (byte a byte).
+	instalado, err := os.ReadFile(vieja)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sha256.Sum256(instalado) != suma {
+		t.Error("el binario instalado no es el nuevo")
+	}
 }

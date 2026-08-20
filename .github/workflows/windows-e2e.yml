@@ -32,7 +32,7 @@ jobs:
         env:
           MANDUCAR_E2E_PRINTER: ManducarE2E
           MANDUCAR_E2E_ARCHIVO: C:\e2e\salida.prn
-        run: go test -tags windowse2e -run TestE2EWindowsSpooler -v -timeout 15m ./internal/runner/
+        run: go test -tags windowse2e -run 'TestE2EWindows' -v -timeout 20m ./internal/runner/
       - name: La cola del spooler, si algo falló
         if: failure()
         shell: powershell
