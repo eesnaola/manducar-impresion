@@ -33,7 +33,7 @@ const tituloCuadro = "Manducar — impresión"
 // uiDeCuadros devuelve por dónde hablar si esto lo abrió un doble clic, y nil
 // si no: ahí manda la consola de siempre. comando es con qué lo llamaron.
 func uiDeCuadros(comando string) ui {
-	if !abiertoDeDobleClic(comando, esTerminal(), runtime.GOOS) {
+	if !abiertoDeDobleClic(comando, desdeTerminal(), runtime.GOOS) {
 		return nil
 	}
 	d, err := nuevosCuadros()
@@ -49,12 +49,26 @@ func uiDeCuadros(comando string) ui {
 	return &cuadros{d: d}
 }
 
+// desdeTerminal dice si a esto lo largó una terminal. La pregunta parece la
+// misma en todos lados y no lo es —en Windows la consola aparece sola—, así
+// que cada sistema la contesta en su archivo.
+
+// consolaCompartida traduce a esa respuesta los procesos colgados de la
+// consola de Windows. Si somos el único, la consola la abrió el sistema para
+// nosotros al hacer doble clic y no hay ninguna terminal del otro lado; si hay
+// otro, es el shell que nos lanzó. Sin consola tampoco hay terminal.
+//
+// Vive acá, fuera del archivo de Windows, para que se pueda probar en
+// cualquier máquina: es la regla que se equivocaba, y la que nadie podía mirar
+// era justamente ésta.
+func consolaCompartida(procesos uint32) bool { return procesos > 1 }
+
 // abiertoDeDobleClic: no hay forma de preguntarle al sistema «¿esto lo abrió
-// una persona desde el escritorio?», así que se lo deduce. Del otro lado de la
-// entrada no hay una terminal —el doble clic no le da ninguna— y no le pasaron
-// ningún comando, porque para escribir un comando hace falta justamente la
-// terminal que no hay. Sólo vale donde hay cuadros que mostrar: en Linux el
-// programa se abre desde una terminal, y ahí el asistente ya se entiende.
+// una persona desde el escritorio?», así que se lo deduce. Del otro lado no
+// hay una terminal —el doble clic no viene de ninguna— y no le pasaron ningún
+// comando, porque para escribir un comando hace falta justamente la terminal
+// que no hay. Sólo vale donde hay cuadros que mostrar: en Linux el programa se
+// abre desde una terminal, y ahí el asistente ya se entiende.
 func abiertoDeDobleClic(comando string, terminal bool, sistema string) bool {
 	if terminal {
 		return false

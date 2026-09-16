@@ -42,6 +42,11 @@ func iconoDelBundle() string {
 // persona; no hay ninguna consola nuestra que soltar.
 func soltarConsola() {}
 
+// desdeTerminal: acá stdin alcanza. Al .app lo abre Finder sin darle ningún
+// tty, así que no haber terminal del otro lado es exactamente la señal que
+// buscamos. (En Windows no: ver dialogos_windows.go.)
+func desdeTerminal() bool { return esTerminal() }
+
 type cuadrosMac struct {
 	osascript string
 	icono     string // ruta al .icns del bundle, o "" (usa «note»)

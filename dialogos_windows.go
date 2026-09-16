@@ -12,9 +12,33 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+// desdeTerminal: acá no sirve mirar stdin. Windows le abre una consola propia
+// a todo .exe de consola que arranque sin una —que es justo lo que pasa con el
+// doble clic—, así que stdin es una consola SIEMPRE y `term.IsTerminal` dice
+// que sí las dos veces. Lo que separa los dos casos es quién más está colgado
+// de esa consola: si la abrió el doble clic estamos solos, y si la heredamos
+// de un cmd o un PowerShell está también el shell.
+func desdeTerminal() bool { return consolaCompartida(procesosEnLaConsola()) }
+
+// procesosEnLaConsola son los procesos adjuntos a nuestra consola, o 0 si no
+// tenemos ninguna. conhost.exe no cuenta: no está adjunto, la sirve.
+//
+// GetConsoleProcessList no está en golang.org/x/sys/windows, así que se le
+// pide a kernel32 a mano, como FreeConsole acá abajo. Si el buffer queda
+// corto no llena nada pero devuelve igual cuántos eran, que es lo único que
+// miramos; cuatro lugares sobran para distinguir «uno» de «más de uno».
+func procesosEnLaConsola() uint32 {
+	proc := windows.NewLazySystemDLL("kernel32.dll").NewProc("GetConsoleProcessList")
+	var pids [4]uint32
+	n, _, _ := proc.Call(uintptr(unsafe.Pointer(&pids[0])), uintptr(len(pids)))
+
+	return uint32(n)
+}
 
 func nuevosCuadros() (dialogs, error) {
 	exe := wscriptExe()

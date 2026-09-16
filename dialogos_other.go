@@ -13,4 +13,8 @@ func nuevosCuadros() (dialogs, error) { return nil, errSinCuadros }
 
 func soltarConsola() {}
 
+// desdeTerminal: acá no decide nada —abiertoDeDobleClic se planta antes por el
+// sistema—, pero la función tiene que existir para que el programa compile.
+func desdeTerminal() bool { return esTerminal() }
+
 var errSinCuadros = errors.New("en este sistema no hay cuadros de diálogo: el asistente va por la terminal")

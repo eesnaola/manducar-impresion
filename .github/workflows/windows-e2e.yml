@@ -11,6 +11,19 @@ on:
   push:
   workflow_dispatch:
 jobs:
+  # Rápido y aparte del spooler: la consola no necesita ninguna impresora, y
+  # esto tiene que fallar solo si alguien vuelve a decidir por stdin si el
+  # programa lo abrió un doble clic. Esa regla se equivocó una vez y la tabla
+  # de casos le daba la razón, porque la premisa mal escrita estaba en el test.
+  asistente:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.23.x', check-latest: false }
+      - name: La consola de verdad (doble clic vs. terminal)
+        run: go test -run 'TestConsola' -v .
+
   spooler:
     runs-on: windows-latest
     steps:

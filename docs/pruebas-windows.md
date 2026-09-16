@@ -33,16 +33,27 @@ Preparación (una vez):
    (`tools/impresora-dummy.py` de manducar) escuchando. Pausar/cancelar se
    hace desde la ventanita de la cola, como un usuario real.
 
-Para que el doble clic vincule contra el dev (y no contra manduc.ar), antes
-de abrirlo, en un PowerShell:
+Para que el doble clic vincule contra el dev (y no contra manduc.ar), en un
+PowerShell, una vez:
 
 ```
-cmd /c "set MANDUCAR_IMPRESION_SERVIDOR=http://pizzeria.manducar.localhost:8081&& manducar-impresion.exe asistente < NUL"
+setx MANDUCAR_IMPRESION_SERVIDOR http://pizzeria.manducar.localhost:8081
 ```
 
-(el `< NUL` es lo que hace que pregunte en cuadros y no en la consola; o
-`setx MANDUCAR_IMPRESION_SERVIDOR …` y cerrar sesión, y de ahí en más el
-doble clic normal va al dev).
+Cerrar sesión y volver a entrar, y de ahí en más **el doble clic normal va al
+dev**. Que sea el doble clic de verdad importa: es lo único que prueba el
+camino que hace la persona del local.
+
+Lanzarlo desde la terminal no sirve para esta prueba, y el atajo que había acá
+—`cmd /c "set … && manducar-impresion.exe asistente < NUL"`— ya no da cuadros,
+a propósito. Ese `< NUL` era el workaround de un bug: el programa decidía por
+stdin si lo había abierto un doble clic, y en Windows eso nunca podía salir
+bien —al `.exe` de consola el sistema le da una consola propia al abrirlo del
+escritorio, así que del otro lado de la entrada hay una terminal siempre—.
+Redirigir la entrada era engañar a esa regla. Ahora la regla cuenta los
+procesos colgados de la consola (`GetConsoleProcessList`): uno solo es el doble
+clic, dos es el shell que lo lanzó. Lanzado desde PowerShell hay dos, con
+`< NUL` o sin él, y contesta por la consola, que es lo correcto.
 
 Checklist por versión (bajar el `.exe` DESDE EL NAVEGADOR de la VM, para que
 traiga la marca de internet):
@@ -50,7 +61,10 @@ traiga la marca de internet):
 - [ ] SmartScreen: «Windows protegió tu PC» → Más información → Ejecutar de
       todas formas. Una sola vez.
 - [ ] Doble clic: pregunta el código en un cuadro de diálogo, SIN ventana
-      negra detrás.
+      negra detrás. (Parpadea un instante y se cierra: la consola la abre el
+      sistema y el programa la suelta apenas consigue los cuadros.)
+- [ ] Desde PowerShell, el otro lado de la misma regla: `.\manducar-impresion.exe
+      estado` contesta EN la consola, sin abrir ningún cuadro.
 - [ ] Código inválido y código vencido: lo dicen en un cuadro, ofrecen
       reintentar, a la tercera se rinden con gracia.
 - [ ] Código bueno: vincula, instala en modo usuario (sin UAC), cuadro final

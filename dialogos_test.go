@@ -8,6 +8,36 @@ import (
 	"github.com/eesnaola/manducar-impresion/internal/config"
 )
 
+// consolaCompartida es la que decide, en Windows, si esto lo abrió una persona
+// desde el escritorio. Mirar stdin no sirve: el doble clic sobre un .exe de
+// consola le da una consola al proceso, así que del otro lado de la entrada
+// SIEMPRE hay una terminal y el asistente se creía llamado desde una. Lo que
+// distingue los dos casos es cuántos procesos hay colgados de esa consola: el
+// nuestro solo si la abrió el doble clic, el nuestro y el shell si la
+// heredamos de un cmd o un PowerShell.
+func TestConsolaCompartida(t *testing.T) {
+	casos := []struct {
+		nombre   string
+		procesos uint32
+		quiero   bool
+	}{
+		{"doble clic: la consola es sólo nuestra", 1, false},
+		{"desde cmd o PowerShell: también está el shell", 2, true},
+		{"desde un .bat, con más de un shell en el medio", 3, true},
+		// Sin consola tampoco hay terminal: es el caso del que nos lanza
+		// despegados, y el que valdría si algún día se compilara con
+		// -H windowsgui.
+		{"sin consola", 0, false},
+	}
+	for _, c := range casos {
+		t.Run(c.nombre, func(t *testing.T) {
+			if got := consolaCompartida(c.procesos); got != c.quiero {
+				t.Fatalf("dio %v y tenía que dar %v", got, c.quiero)
+			}
+		})
+	}
+}
+
 // Abrir el programa de un doble clic es lo que no se puede preguntar: se
 // deduce de que no haya terminal del otro lado y de que no le hayan pasado
 // ningún comando.
