@@ -4,6 +4,7 @@ package printer
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -125,6 +126,45 @@ func TestCoincidePuertoUSB(t *testing.T) {
 	for _, c := range casos {
 		if got := coincidePuerto(c.base, c.numero, c.puerto); got != c.quiero {
 			t.Errorf("coincidePuerto(%q, %d, %q) = %v", c.base, c.numero, c.puerto, got)
+		}
+	}
+}
+
+// A qué aparato se le pregunta. abren son las rutas que se dejan abrir (las
+// enchufadas); el resto son entradas viejas del registro.
+func TestElegirAparatos(t *testing.T) {
+	conPuerto := func(ruta string, numero uint64) aparatoUSB {
+		return aparatoUSB{ruta: ruta, base: "USB", numero: numero, conPuerto: true}
+	}
+	sinPuerto := func(ruta string) aparatoUSB { return aparatoUSB{ruta: ruta} }
+	casos := []struct {
+		nombre   string
+		aparatos []aparatoUSB
+		abren    []string
+		quiero   []string
+	}{
+		{"el que tiene anotado ese puerto", []aparatoUSB{conPuerto("a", 1), conPuerto("b", 2)}, []string{"a", "b"}, []string{"b"}},
+		{"los anotados en ese puerto aunque no se abran: desenchufada no responde", []aparatoUSB{conPuerto("a", 2), conPuerto("b", 2)}, nil, []string{"a", "b"}},
+		// El Caracol, 12/10/2026: una sola entrada, sin puerto anotado donde se buscaba.
+		{"sin puerto anotado, la única enchufada", []aparatoUSB{sinPuerto("a")}, []string{"a"}, []string{"a"}},
+		{"sin puerto anotado, la única enchufada entre viejas", []aparatoUSB{sinPuerto("a"), sinPuerto("b")}, []string{"b"}, []string{"b"}},
+		{"sin puerto anotado y dos enchufadas: no se adivina", []aparatoUSB{sinPuerto("a"), sinPuerto("b")}, []string{"a", "b"}, nil},
+		{"la de otro puerto es otra impresora y no se toca", []aparatoUSB{conPuerto("a", 1)}, []string{"a"}, nil},
+		{"la de otro puerto no cuenta para el descarte", []aparatoUSB{conPuerto("a", 1), sinPuerto("b")}, []string{"a", "b"}, []string{"b"}},
+		{"sin aparatos", nil, nil, nil},
+	}
+	for _, c := range casos {
+		abre := func(ruta string) bool {
+			for _, r := range c.abren {
+				if r == ruta {
+					return true
+				}
+			}
+			return false
+		}
+		got := elegirAparatos(c.aparatos, "USB002", abre)
+		if fmt.Sprint(got) != fmt.Sprint(c.quiero) {
+			t.Errorf("%s: elegirAparatos = %v, quiero %v", c.nombre, got, c.quiero)
 		}
 	}
 }

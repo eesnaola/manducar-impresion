@@ -40,11 +40,16 @@ const (
 	usbLectura = 64
 )
 
-// aparatosUSB: las rutas de los aparatos que el registro anota en ese
-// puerto. Puede haber más de una —quedan entradas de una impresora que se
-// desenchufó—, así que se prueban todas. El número de puerto vive en
-// «Enum\<instancia>\Device Parameters» como «Base Name» + «Port Number»
-// (USB + 1 = USB001): así lo leyó el diagnóstico en El Caracol.
+// aparatosUSB: las rutas de los aparatos de ese puerto (ver elegirAparatos).
+// Puede haber más de una —quedan entradas de una impresora que se
+// desenchufó—, así que se prueban todas.
+//
+// Windows anota el puerto («Base Name» + «Port Number»: USB + 1 = USB001) en
+// los «Device Parameters» de la interfaz: «DeviceClasses\{28d78fad-…}\
+// ##?#USB#…\#\Device Parameters». Hasta la 0.1.7 se lo buscaba en los del
+// aparato («Enum\<instancia>\Device Parameters»), y en El Caracol ahí no
+// estaba: el semáforo nunca encontró la impresora y la dio por buena. Los del
+// aparato se miran sólo si en la interfaz no está.
 func aparatosUSB(puerto string) []string {
 	if i := strings.Index(puerto, ","); i >= 0 {
 		puerto = puerto[:i]
@@ -61,29 +66,46 @@ func aparatosUSB(puerto string) []string {
 	if err != nil {
 		return nil
 	}
-	var rutas []string
+	var aparatos []aparatoUSB
 	for _, n := range nombres {
 		// «##?#USB#VID_0416&PID_5011#…#{28d78fad-…}» es la ruta del aparato,
 		// con «\\?\» escrito así.
 		if !strings.HasPrefix(n, "##?#") {
 			continue
 		}
-		inst := valorTexto(k, n, "DeviceInstance")
-		if inst == "" {
-			continue
+		a := aparatoUSB{ruta: `\\?\` + n[4:]}
+		a.base, a.numero, a.conPuerto = puertoAnotado(k, n+`\#\Device Parameters`)
+		if !a.conPuerto {
+			if inst := valorTexto(k, n, "DeviceInstance"); inst != "" {
+				a.base, a.numero, a.conPuerto = puertoAnotado(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Enum\`+inst+`\Device Parameters`)
+			}
 		}
-		dp, err := registry.OpenKey(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Enum\`+inst+`\Device Parameters`, registry.QUERY_VALUE)
-		if err != nil {
-			continue
-		}
-		base, _, _ := dp.GetStringValue("Base Name")
-		numero, ok := valorNumero(dp, "Port Number")
-		dp.Close()
-		if ok && coincidePuerto(base, numero, puerto) {
-			rutas = append(rutas, `\\?\`+n[4:])
-		}
+		aparatos = append(aparatos, a)
 	}
-	return rutas
+	return elegirAparatos(aparatos, puerto, existeUSB)
+}
+
+// puertoAnotado lee «Base Name» y «Port Number» de esa clave. Sin «Port
+// Number» no hay puerto anotado.
+func puertoAnotado(padre registry.Key, sub string) (string, uint64, bool) {
+	dp, err := registry.OpenKey(padre, sub, registry.QUERY_VALUE)
+	if err != nil {
+		return "", 0, false
+	}
+	defer dp.Close()
+	base, _, _ := dp.GetStringValue("Base Name")
+	numero, ok := valorNumero(dp, "Port Number")
+	return base, numero, ok
+}
+
+// existeUSB: ¿el aparato está enchufado? Se deja abrir, o lo tiene abierto
+// otro (el spooler imprimiendo). Abrirlo no le manda nada.
+func existeUSB(ruta string) bool {
+	h, ocupada, ok := abrirUSB([]string{ruta})
+	if ok {
+		windows.CloseHandle(h)
+	}
+	return ok || ocupada
 }
 
 func valorTexto(padre registry.Key, sub, nombre string) string {

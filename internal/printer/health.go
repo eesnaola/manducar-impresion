@@ -124,6 +124,42 @@ func coincidePuerto(base string, numero uint64, puerto string) bool {
 	return puerto != "" && strings.EqualFold(puerto, fmt.Sprintf("%s%03d", base, numero))
 }
 
+// aparatoUSB: una entrada de la interfaz de impresión USB en el registro de
+// Windows, con el puerto que le anotó si se lo encontró.
+type aparatoUSB struct {
+	ruta      string
+	base      string
+	numero    uint64
+	conPuerto bool
+}
+
+// elegirAparatos: las rutas a las que se le pregunta por ese puerto. Primero
+// las que tienen anotado ese puerto, se dejen abrir o no (desenchufada es «No
+// responde»). Si ninguna, por descarte: entre las que no tienen puerto
+// anotado, la única que se deja abrir. Así se encontró la de El Caracol el
+// 12/10/2026, que no tenía el puerto donde el agente lo buscaba. Las que
+// tienen anotado otro puerto son otra impresora y no se tocan: una pregunta
+// de estado a una láser puede salir impresa.
+func elegirAparatos(aparatos []aparatoUSB, puerto string, abre func(ruta string) bool) []string {
+	var anotadas, abiertas []string
+	for _, a := range aparatos {
+		if a.conPuerto {
+			if coincidePuerto(a.base, a.numero, puerto) {
+				anotadas = append(anotadas, a.ruta)
+			}
+		} else if abre(a.ruta) {
+			abiertas = append(abiertas, a.ruta)
+		}
+	}
+	if len(anotadas) > 0 {
+		return anotadas
+	}
+	if len(abiertas) == 1 {
+		return abiertas
+	}
+	return nil
+}
+
 func contains(list []string, s string) bool {
 	for _, x := range list {
 		if x == s {
