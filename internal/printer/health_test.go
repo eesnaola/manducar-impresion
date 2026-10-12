@@ -80,3 +80,51 @@ func TestProbeNetworkApagada(t *testing.T) {
 		t.Errorf("apagada: %s", got)
 	}
 }
+
+// Los bytes que contestó la POS-58 de El Caracol por USB (12/10/2026): con
+// la tapa cerrada, 16 / 12 / 12 —el 16 trae prendido el bit del cajón, que
+// no dice nada de la impresora—. Con la tapa abierta no contesta nada.
+func TestDiagnosticarConLaPOS58(t *testing.T) {
+	casos := []struct {
+		nombre     string
+		respuestas map[byte]byte
+		quiero     Health
+	}{
+		{"tapa cerrada", map[byte]byte{1: 0x16, 2: 0x12, 4: 0x12}, HealthOK},
+		{"tapa abierta (no contesta)", map[byte]byte{}, HealthSilent},
+		{"sin papel", map[byte]byte{1: 0x16, 2: 0x12, 4: 0x12 | 0x60}, HealthNoPaper},
+	}
+	for _, c := range casos {
+		pregunta := func(n byte) (byte, bool) {
+			b, ok := c.respuestas[n]
+			return b, ok
+		}
+		if got := diagnosticar(pregunta); got != c.quiero {
+			t.Errorf("%s: %s, esperaba %s", c.nombre, got, c.quiero)
+		}
+	}
+}
+
+// El puerto de la impresora del sistema («USB001») contra lo que el
+// registro dice del aparato: «Base Name» USB y «Port Number» 1.
+func TestCoincidePuertoUSB(t *testing.T) {
+	casos := []struct {
+		base   string
+		numero uint64
+		puerto string
+		quiero bool
+	}{
+		{"USB", 1, "USB001", true},
+		{"USB", 1, "usb001", true},
+		{"USB", 12, "USB012", true},
+		{"", 1, "USB001", true},
+		{"USB", 1, "USB002", false},
+		{"USB", 1, "COM1", false},
+		{"USB", 1, "", false},
+	}
+	for _, c := range casos {
+		if got := coincidePuerto(c.base, c.numero, c.puerto); got != c.quiero {
+			t.Errorf("coincidePuerto(%q, %d, %q) = %v", c.base, c.numero, c.puerto, got)
+		}
+	}
+}

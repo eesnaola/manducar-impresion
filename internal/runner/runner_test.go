@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -984,5 +985,43 @@ func TestPulsarImpresorasReportaElSemaforo(t *testing.T) {
 	// La 2 comparte target con la cola ocupada: cuenta como viva sin pulsar.
 	if recibido[1].ID != 2 || recibido[1].Health != "OK" {
 		t.Errorf("la 2 (imprimiendo): %+v", recibido[1])
+	}
+}
+
+// La que está imprimiendo ahora no se pulsa aunque su cola ya esté vacía: el
+// worker saca el trabajo de la cola antes de mandarlo, y por USB la pregunta
+// del pulso se metería en el medio de los bytes de la comanda.
+func TestNoSePulsaLaImpresoraMientrasImprime(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	r := testRunner(t, srv.URL)
+	escribiendo := make(chan struct{})
+	soltar := make(chan struct{})
+	r.write = func(context.Context, api.Target, []byte) printer.Outcome {
+		close(escribiendo)
+		<-soltar
+		return printer.Outcome{OK: true, WroteSomething: true}
+	}
+	var pulsos atomic.Int32
+	r.probe = func(context.Context, api.Target) string {
+		pulsos.Add(1)
+		return "OK"
+	}
+
+	barra := api.Target{Kind: "system", SystemName: "Barra termica"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r.enqueue(ctx, api.Job{ID: 7, Printer: barra, Payload: []byte("x")})
+	<-escribiendo
+
+	r.pulsarImpresoras(context.Background(), []api.PrinterRef{{ID: 1, Target: barra}})
+	close(soltar)
+	waitFor(t, time.Second, "el trabajo no terminó", func() bool { return r.inFlight.Load() == 0 })
+
+	if n := pulsos.Load(); n != 0 {
+		t.Fatalf("se pulsó %d veces mientras imprimía", n)
 	}
 }

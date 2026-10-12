@@ -95,6 +95,11 @@ type runner struct {
 	printersMu sync.Mutex
 	printers   map[string]*queue // una cola y un worker por impresora
 
+	// Un turno por impresora: lo tiene quien le está hablando, el trabajo
+	// que se imprime o el pulso del semáforo (ver turno).
+	turnosMu sync.Mutex
+	turnos   map[string]*sync.Mutex
+
 	// Los trabajos que quedaron trabados en la cola del sistema («sin
 	// confirmar» del lado del servidor): se los sigue mirando y, si el
 	// spooler al final los saca —volvió la impresora—, se avisa que salió.
@@ -543,7 +548,10 @@ func (r *runner) print(jobCtx context.Context, j api.Job) {
 	defer r.inFlight.Add(-1) // lo sumó enqueue
 
 	log.Printf("→ trabajo %d (%s) a %s, %d bytes", j.ID, j.Kind, targetLabel(j.Printer), len(j.Payload))
+	turno := r.turno(j.Printer)
+	turno.Lock()
 	out := r.write(jobCtx, j.Printer, j.Payload)
+	turno.Unlock()
 	res := api.Result{OK: out.OK, WroteSomething: out.WroteSomething, Canceled: out.Canceled}
 	if out.Err != nil {
 		res.Error = out.Err.Error()
@@ -582,7 +590,8 @@ func (r *runner) print(jobCtx context.Context, j api.Job) {
 // pulsarImpresoras: el semáforo. A cada impresora de esta computadora se le
 // pregunta cómo está (sin imprimirle nada) y el resultado va al servidor. La
 // que está imprimiendo en este momento no se pulsa: está viva por definición,
-// y meterle un TCP de más a una térmica de una sola conexión la marearía.
+// meterle un TCP de más a una térmica de una sola conexión la marearía, y
+// por USB la pregunta caería en el medio de los bytes de la comanda.
 func (r *runner) pulsarImpresoras(ctx context.Context, refs []api.PrinterRef) {
 	if !r.pulsando.CompareAndSwap(false, true) {
 		return
@@ -597,8 +606,13 @@ func (r *runner) pulsarImpresoras(ctx context.Context, refs []api.PrinterRef) {
 		var salud string
 		if r.imprimiendo(ref.Target) {
 			salud = string(printer.HealthOK)
+		} else if turno := r.turno(ref.Target); !turno.TryLock() {
+			// Imprimiendo ahora mismo: la cola ya está vacía porque el
+			// worker saca el trabajo antes de mandarlo.
+			salud = string(printer.HealthOK)
 		} else {
 			salud = r.probe(ctx, ref.Target)
+			turno.Unlock()
 		}
 		estados = append(estados, api.PrinterHealth{ID: ref.ID, Health: salud})
 	}
@@ -611,6 +625,23 @@ func (r *runner) pulsarImpresoras(ctx context.Context, refs []api.PrinterRef) {
 		// Efímero: el próximo latido trae otro pulso. Sólo al log.
 		log.Println("no se pudo contar el estado de las impresoras:", err)
 	}
+}
+
+// turno: el candado de una impresora. Lo toma el trabajo mientras se manda
+// y el pulso mientras pregunta, así nunca le hablan los dos a la vez.
+func (r *runner) turno(t api.Target) *sync.Mutex {
+	key := t.Kind + "|" + t.Address + "|" + t.SystemName
+	r.turnosMu.Lock()
+	defer r.turnosMu.Unlock()
+	if r.turnos == nil {
+		r.turnos = map[string]*sync.Mutex{}
+	}
+	m, ok := r.turnos[key]
+	if !ok {
+		m = &sync.Mutex{}
+		r.turnos[key] = m
+	}
+	return m
 }
 
 // imprimiendo: ¿hay una cola con trabajos para ese destino ahora mismo?

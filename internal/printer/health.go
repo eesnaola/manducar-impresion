@@ -3,11 +3,14 @@ package printer
 // El pulso a una impresora: saber si está viva sin imprimirle nada. Para las
 // de red es TCP + DLE EOT (el estado en tiempo real de ESC/POS, que cualquier
 // Epson y la mayoría de los clones contestan con un byte sin tocar el buffer
-// de impresión); para las del sistema, lo que diga el sistema.
+// de impresión); para las del sistema, lo que diga el sistema, y en Windows
+// el mismo DLE EOT por el USB si la impresora está enchufada ahí.
 
 import (
 	"context"
+	"fmt"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -51,9 +54,7 @@ func NewTarget(kind, address, systemName string) apiTarget {
 	return apiTarget{Kind: kind, Address: address, SystemName: systemName}
 }
 
-// probeNetwork: TCP y después DLE EOT. Tres preguntas de un byte cada una:
-// n=1 (¿en línea?), n=2 (¿por qué no? tapa, papel) y n=4 (sensores de papel).
-// La que no contesta a tiempo corta: con lo ya sabido alcanza.
+// probeNetwork: TCP y después las preguntas de DLE EOT (ver diagnosticar).
 func probeNetwork(ctx context.Context, address string) Health {
 	d := net.Dialer{Timeout: probeDialTimeout}
 	conn, err := d.DialContext(ctx, "tcp", address)
@@ -62,7 +63,15 @@ func probeNetwork(ctx context.Context, address string) Health {
 	}
 	defer conn.Close()
 
-	estado, ok := dleEot(conn, 1)
+	return diagnosticar(func(n byte) (byte, bool) { return dleEot(conn, n) })
+}
+
+// diagnosticar hace las tres preguntas de DLE EOT por donde diga pregunta
+// —el socket de una de red, el USB de una del sistema— y traduce los bytes:
+// n=1 (¿en línea?), n=2 (¿por qué no? tapa, papel) y n=4 (sensores de
+// papel). La que no contesta a tiempo corta: con lo ya sabido alcanza.
+func diagnosticar(pregunta func(n byte) (byte, bool)) Health {
+	estado, ok := pregunta(1)
 	if !ok {
 		return HealthSilent
 	}
@@ -72,7 +81,7 @@ func probeNetwork(ctx context.Context, address string) Health {
 		return HealthSilent
 	}
 
-	if causa, ok := dleEot(conn, 2); ok {
+	if causa, ok := pregunta(2); ok {
 		if causa&0x04 != 0 { // tapa abierta
 			return HealthCoverOpen
 		}
@@ -80,7 +89,7 @@ func probeNetwork(ctx context.Context, address string) Health {
 			return HealthNoPaper
 		}
 	}
-	if papel, ok := dleEot(conn, 4); ok {
+	if papel, ok := pregunta(4); ok {
 		if papel&0x60 != 0 { // sensor de fin de papel
 			return HealthNoPaper
 		}
@@ -103,6 +112,16 @@ func dleEot(conn net.Conn, n byte) (byte, bool) {
 		return 0, false
 	}
 	return buf[0], true
+}
+
+// coincidePuerto: ¿el aparato que el registro anota con «Base Name» y «Port
+// Number» (USB y 1) es el del puerto de la impresora del sistema («USB001»)?
+// Sin «Base Name», el USB de siempre.
+func coincidePuerto(base string, numero uint64, puerto string) bool {
+	if base == "" {
+		base = "USB"
+	}
+	return puerto != "" && strings.EqualFold(puerto, fmt.Sprintf("%s%03d", base, numero))
 }
 
 func contains(list []string, s string) bool {

@@ -6,7 +6,8 @@ package printer
 // spooler dice poco por sí sola («Ready» eterno), así que se mira lo que sí
 // es confiable: la pausa y el «usar sin conexión» del usuario, y —si el
 // puerto es un Standard TCP/IP en crudo, la térmica típica— el socket de
-// atrás, pulsado igual que una impresora de red.
+// atrás, pulsado igual que una impresora de red. Si el puerto es USB, el
+// aparato mismo (usb_windows.go).
 
 import (
 	"context"
@@ -43,6 +44,11 @@ func probeSystem(ctx context.Context, name string) Health {
 	// la térmica esté apagada, porque no se entera hasta que imprime.
 	if dir, ok := puertoTCPCrudo(info.puerto); ok {
 		return probeNetwork(ctx, dir)
+	}
+	// Enchufada por USB: se le pregunta por el aparato (ver usb_windows.go).
+	// Sin aparato en el registro para ese puerto, no se inventa nada.
+	if rutas := aparatosUSB(info.puerto); len(rutas) > 0 {
+		return probeUSB(ctx, rutas)
 	}
 	return HealthOK
 }
