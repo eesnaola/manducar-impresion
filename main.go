@@ -10,16 +10,20 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/kardianos/service"
 
 	"github.com/eesnaola/manducar-impresion/internal/api"
+	"github.com/eesnaola/manducar-impresion/internal/caida"
 	"github.com/eesnaola/manducar-impresion/internal/config"
 	"github.com/eesnaola/manducar-impresion/internal/printer"
 	"github.com/eesnaola/manducar-impresion/internal/runner"
 	"github.com/eesnaola/manducar-impresion/internal/svc"
+	"github.com/eesnaola/manducar-impresion/internal/vigia"
 )
 
 // Version la pone el release: -ldflags "-X main.Version=1.2.3".
@@ -55,6 +59,8 @@ func main() {
 		os.Exit(cmdPair(args, sistema))
 	case "correr":
 		os.Exit(cmdRun(args))
+	case "vigilar":
+		os.Exit(cmdVigilar())
 	case "instalar":
 		if sistema {
 			os.Exit(svc.Install(Version, true))
@@ -91,6 +97,7 @@ terminal.
   desinstalar                                    saca el agente
   estado                                         a qué local está vinculada, dónde están la configuración y el log
   correr                                         corre en primer plano (para probar y ver el log)
+  vigilar                                        lo que arranca el inicio de sesión en Windows: corre el agente y lo levanta si se cae
   version
 
 Opciones:
@@ -317,20 +324,76 @@ func cmdRun(args []string) int {
 	// En Windows sin administrador no hay gestor: al agente lo lanza un .vbs
 	// que le pasa --log-archivo. Para el sistema eso es «interactivo», pero
 	// no hay ninguna ventana donde mirar el log.
+	vigilado := os.Getenv(vigia.EnvVigilado) != ""
 	if wantsFileLog(args, os.Getenv("MANDUCAR_IMPRESION_LOG")) {
-		if err := svc.LogToFile(); err != nil {
-			// No se deja de imprimir por no poder escribir el log: se sigue,
-			// y lo que haya para decir sale por la salida de error.
+		// Lo que haya que decir sin archivo (que no se pudo rotar, o abrir)
+		// va a la salida de error. Vigilado no: ésa es impresion.crash, y lo
+		// que caiga ahí se cuenta como caída; va a la normal, que el vigía
+		// guarda en vigia.log.
+		if vigilado {
+			log.SetOutput(os.Stdout)
+		} else {
 			log.SetOutput(os.Stderr)
+		}
+		// No se deja de imprimir por no poder escribir el log: se sigue.
+		if err := svc.LogToFile(); err != nil {
 			log.Println("no se pudo abrir el archivo de log:", err)
 		}
 	} else {
 		log.SetOutput(os.Stdout)
 	}
+	// Una instalación de usuario de Windows de antes del vigía se pasa sola:
+	// se reescribe el .vbs, se lo lanza, y éste sale para no quedar dos. El
+	// hijo del vigía trae la marca y no lo vuelve a hacer.
+	if !vigilado {
+		if pasado, err := svc.PasarAlVigia(); err != nil {
+			log.Println("no se pudo pasar al vigía (sigo sin él):", err)
+		} else if pasado {
+			log.Println("me paso al vigía: el lanzador arranca de nuevo el agente vigilado")
+			return 0
+		}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := runner.Run(ctx, Version); err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return 0
+}
+
+// cmdVigilar es lo que arranca el .vbs de Windows: corre «correr» como
+// proceso hijo y lo vuelve a levantar si se cae (ver internal/vigia). La
+// salida de error del hijo va a impresion.crash, y cada salida mala queda
+// anotada ahí atrás; el agente que arranca después la cuenta al servidor. El
+// vigía escribe en vigia.log, igual que la salida normal del hijo; el hijo,
+// en impresion.log.
+func cmdVigilar() int {
+	if err := svc.LogDelVigiaToFile(); err != nil {
+		log.SetOutput(os.Stderr)
+		log.Println("no se pudo abrir el archivo de log:", err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		log.Println("vigía: no sé dónde está el ejecutable:", err)
+		return 1
+	}
+	dir, err := config.Dir()
+	if err != nil {
+		log.Println("vigía:", err)
+		return 1
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	log.Printf("vigía %s: arranco el agente", Version)
+	anotar := func(codigo int, cuando time.Time) {
+		if err := caida.AnotarSalida(dir, codigo, cuando); err != nil {
+			log.Println("vigía: no se pudo anotar la caída:", err)
+		}
+	}
+	lanzar := vigia.Proceso(exe, []string{"correr", "--log-archivo"}, filepath.Join(dir, caida.Archivo))
+	if err := vigia.Vigilar(ctx, lanzar, anotar, vigia.Dormir); err != nil {
+		log.Println("vigía:", err)
 		return 1
 	}
 	return 0

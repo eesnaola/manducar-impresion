@@ -86,3 +86,16 @@ type Result struct {
 	// canceló ahí (no salió ni va a salir).
 	Canceled bool `json:"canceled,omitempty"`
 }
+
+// CrashReport es la caída que el agente cuenta al volver a arrancar
+// (POST /agente/caida). Los topes los hace el que arma el informe
+// (internal/caida) y los vuelve a hacer el servidor.
+type CrashReport struct {
+	Version string `json:"version"`
+	Sistema string `json:"sistema"`
+	Ocurrio string `json:"ocurrio"` // RFC 3339, UTC
+	Codigo  *int   `json:"codigo"`  // nil si el vigía no lo vio
+	Resumen string `json:"resumen"`
+	Detalle string `json:"detalle"`
+	Log     string `json:"log"`
+}

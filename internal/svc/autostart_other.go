@@ -16,6 +16,9 @@ func autostartUninstall() error             { return errNoAutostart }
 func autostartRestart() error               { return errNoAutostart }
 func autostartInstalled() (bool, error)     { return false, errNoAutostart }
 
+// PasarAlVigia: fuera de Windows el gestor de servicios ya lo levanta.
+func PasarAlVigia() (bool, error) { return false, nil }
+
 // checkPrivileges se planta antes de empezar: instalar el servicio del sistema
 // a medias es peor que no empezar, y la instalación de usuario hecha con sudo
 // es peor todavía —anda, no se queja, y queda en la carpeta de root, donde no

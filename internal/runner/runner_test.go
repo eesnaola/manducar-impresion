@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/eesnaola/manducar-impresion/internal/api"
+	"github.com/eesnaola/manducar-impresion/internal/caida"
 	"github.com/eesnaola/manducar-impresion/internal/config"
 	"github.com/eesnaola/manducar-impresion/internal/outbox"
 	"github.com/eesnaola/manducar-impresion/internal/printer"
@@ -77,6 +79,17 @@ func testRunner(t *testing.T, server string) *runner {
 	return newRunner(config.Config{Server: server, Token: "tok"}, ob, "test")
 }
 
+// soltarArchivoDeCaidas va en cada test que corre Run en este proceso, justo
+// después del t.TempDir() de la configuración. Run llama a caida.Preparar, que
+// le pide a Go copiar las caídas a impresion.crash de ese directorio: Go se
+// queda con el archivo abierto mientras viva el proceso, y en Windows un
+// archivo abierto no se borra, así que la limpieza del TempDir fallaría. Las
+// limpiezas corren al revés: ésta, registrada después, suelta el archivo antes.
+func soltarArchivoDeCaidas(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() { _ = debug.SetCrashOutput(nil, debug.CrashOptions{}) })
+}
+
 // waitFor espera hasta d a que ok() dé verdadero.
 func waitFor(t *testing.T, d time.Duration, why string, ok func() bool) {
 	t.Helper()
@@ -109,6 +122,7 @@ func testJob(id int, addr string) api.Job {
 func TestRunPrintsWhatTheServerHandsOverAndReportsBack(t *testing.T) {
 	addr, got := fakePrinter(t)
 	dir := t.TempDir()
+	soltarArchivoDeCaidas(t)
 	obPath := filepath.Join(dir, "impresion-outbox.json")
 
 	var mu sync.Mutex
@@ -373,6 +387,7 @@ func TestServerThatDoesNotRecognizeUsKeepsTheAgentAlive(t *testing.T) {
 	defer srv.Close()
 
 	dir := t.TempDir()
+	soltarArchivoDeCaidas(t)
 	t.Setenv("MANDUCAR_IMPRESION_CONFIG", filepath.Join(dir, "impresion.json"))
 	if err := config.Save(config.Config{Server: srv.URL, Token: "viejo", AgentID: 1}); err != nil {
 		t.Fatal(err)
@@ -502,6 +517,7 @@ func TestWhileTheTokenIsRejectedItStopsAskingForJobs(t *testing.T) {
 	defer srv.Close()
 
 	dir := t.TempDir()
+	soltarArchivoDeCaidas(t)
 	t.Setenv("MANDUCAR_IMPRESION_CONFIG", filepath.Join(dir, "impresion.json"))
 	if err := config.Save(config.Config{Server: srv.URL, Token: "viejo", AgentID: 1}); err != nil {
 		t.Fatal(err)
@@ -558,6 +574,7 @@ func TestShutdownDoesNotHangOnASilentServer(t *testing.T) {
 	defer close(hang) // se libera al handler antes de cerrar el servidor
 
 	dir := t.TempDir()
+	soltarArchivoDeCaidas(t)
 	t.Setenv("MANDUCAR_IMPRESION_CONFIG", filepath.Join(dir, "impresion.json"))
 	if err := config.Save(config.Config{Server: srv.URL, Token: "tok", AgentID: 1}); err != nil {
 		t.Fatal(err)
@@ -853,6 +870,7 @@ func TestARepairedTokenIsPickedUpWithoutRestarting(t *testing.T) {
 	defer srv.Close()
 
 	dir := t.TempDir()
+	soltarArchivoDeCaidas(t)
 	t.Setenv("MANDUCAR_IMPRESION_CONFIG", filepath.Join(dir, "impresion.json"))
 	if err := config.Save(config.Config{Server: srv.URL, Token: "viejo", AgentID: 1}); err != nil {
 		t.Fatal(err)
@@ -1023,5 +1041,346 @@ func TestNoSePulsaLaImpresoraMientrasImprime(t *testing.T) {
 
 	if n := pulsos.Load(); n != 0 {
 		t.Fatalf("se pulsó %d veces mientras imprimía", n)
+	}
+}
+
+// La caída que quedó anotada se cuenta una sola vez, después del primer
+// latido bueno, y el archivo queda vacío.
+func TestLaCaidaAnotadaSeCuentaUnaVezDespuesDelPrimerLatido(t *testing.T) {
+	var mu sync.Mutex
+	var informes []api.CrashReport
+	var latidos atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/agente/latido":
+			latidos.Add(1)
+			_, _ = w.Write([]byte(`{"mercure":{},"jobsPending":0,"heartbeatSeconds":1}`))
+		case "/agente/caida":
+			var inf api.CrashReport
+			_ = json.NewDecoder(r.Body).Decode(&inf)
+			mu.Lock()
+			informes = append(informes, inf)
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			_, _ = w.Write([]byte(`{"jobs":[]}`))
+		}
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	soltarArchivoDeCaidas(t)
+	t.Setenv("MANDUCAR_IMPRESION_CONFIG", filepath.Join(dir, "impresion.json"))
+	if err := config.Save(config.Config{Server: srv.URL, Token: "tok", AgentID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, caida.Archivo), []byte("panic: se cayó la otra vez\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ran := make(chan error, 1)
+	go func() { ran <- Run(ctx, "test") }()
+
+	waitFor(t, 3*time.Second, "no contó la caída", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(informes) > 0
+	})
+	// El latido es de 1 s: se espera a que haya pasado otro, así se prueba que
+	// después del primero no vuelve a mandar nada.
+	waitFor(t, 3*time.Second, "no hubo un segundo latido", func() bool { return latidos.Load() >= 2 })
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	<-ran
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(informes) != 1 || informes[0].Resumen != "panic: se cayó la otra vez" || informes[0].Version != "test" {
+		t.Fatalf("informes = %+v", informes)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, caida.Archivo)); strings.TrimSpace(string(b)) != "" {
+		t.Errorf("el archivo de la caída quedó con %q", b)
+	}
+}
+
+// Si el servidor no la toma, la caída queda para el próximo arranque: se
+// intentó una vez, no se insiste en los latidos siguientes y no se pierde.
+func TestSiNoSePudoContarLaCaidaQuedaParaLaProxima(t *testing.T) {
+	var intentos, latidos atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/agente/latido":
+			latidos.Add(1)
+			_, _ = w.Write([]byte(`{"mercure":{},"jobsPending":0,"heartbeatSeconds":1}`))
+		case "/agente/caida":
+			intentos.Add(1)
+			w.WriteHeader(500)
+		default:
+			_, _ = w.Write([]byte(`{"jobs":[]}`))
+		}
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	soltarArchivoDeCaidas(t)
+	t.Setenv("MANDUCAR_IMPRESION_CONFIG", filepath.Join(dir, "impresion.json"))
+	if err := config.Save(config.Config{Server: srv.URL, Token: "tok", AgentID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, caida.Archivo), []byte("panic: se cayó la otra vez\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ran := make(chan error, 1)
+	go func() { ran <- Run(ctx, "test") }()
+
+	waitFor(t, 3*time.Second, "no intentó contar la caída", func() bool { return intentos.Load() >= 1 })
+	// Con el latido de 1 s, un segundo latido es la oportunidad de reintentar:
+	// no tiene que aprovecharla.
+	waitFor(t, 3*time.Second, "no hubo un segundo latido", func() bool { return latidos.Load() >= 2 })
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	<-ran
+
+	if n := intentos.Load(); n != 1 {
+		t.Errorf("intentos de contar la caída = %d, tenía que ser 1 por arranque", n)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, caida.Archivo)); !strings.Contains(string(b), "panic: se cayó la otra vez") {
+		t.Errorf("se perdió la caída que no se pudo contar: %q", b)
+	}
+}
+
+// La guarda de «una sola vez por arranque», sin pasar por el latido: llamadas
+// repetidas y simultáneas a informarCaida, con un servidor lento que las deja
+// encimarse, hacen exactamente un intento.
+func TestInformarCaidaIntentaUnaSolaVezPorArranque(t *testing.T) {
+	var intentos atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/agente/caida" {
+			intentos.Add(1)
+			time.Sleep(100 * time.Millisecond)
+			w.WriteHeader(500)
+		}
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, caida.Archivo), []byte("panic: se cayó la otra vez\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := testRunner(t, srv.URL)
+	r.crashDir = dir
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.informarCaida(context.Background())
+		}()
+	}
+	wg.Wait()
+	r.informarCaida(context.Background()) // y una más, ya sin competencia
+
+	if n := intentos.Load(); n != 1 {
+		t.Errorf("intentos = %d, tenía que ser 1", n)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, caida.Archivo)); !strings.Contains(string(b), "panic: se cayó la otra vez") {
+		t.Errorf("se perdió la caída que no se pudo contar: %q", b)
+	}
+}
+
+// Sin directorio de caídas (los runners que no pasan por Run) no hay nada que
+// contar ni se toca el servidor.
+func TestInformarCaidaSinDirectorioNoHaceNada(t *testing.T) {
+	var intentos atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		intentos.Add(1)
+	}))
+	defer srv.Close()
+
+	r := testRunner(t, srv.URL)
+	r.informarCaida(context.Background())
+
+	if n := intentos.Load(); n != 0 {
+		t.Errorf("le habló al servidor %d veces sin tener qué contar", n)
+	}
+}
+
+// Texto suelto en impresion.crash (algo que el agente escribió en la salida de
+// error) no se cuenta, y se vacía: si quedara, se mezclaría con la próxima
+// caída de verdad.
+func TestTextoSueltoEnLaCaidaNoSeCuentaYSeVacia(t *testing.T) {
+	var intentos atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/agente/caida" {
+			intentos.Add(1)
+		}
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, caida.Archivo), []byte("no se pudo rotar el log: el archivo está en uso\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := testRunner(t, srv.URL)
+	r.crashDir = dir
+	r.informarCaida(context.Background())
+
+	if n := intentos.Load(); n != 0 {
+		t.Errorf("contó como caída un texto suelto (%d intentos)", n)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, caida.Archivo)); len(b) != 0 {
+		t.Errorf("el texto suelto quedó en el archivo: %q", b)
+	}
+}
+
+// La caída se cuenta antes de decidir si actualizarse: una actualización que
+// sale (os.Exit) con el informe en el aire lo dejaría contado y sin vaciar, y
+// el arranque siguiente lo contaría otra vez.
+func TestLaCaidaSeCuentaAntesDeDecidirLaActualizacion(t *testing.T) {
+	var vaciadoAlBajar atomic.Int32 // 0: no bajó; 1: bajó con la caída vaciada; 2: bajó antes
+	var dir string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/agente/latido":
+			// Un sha256 bien formado: la descarga devuelve 404 y el binario de
+			// test no se toca.
+			fmt.Fprintf(w, `{"mercure":{},"jobsPending":0,"heartbeatSeconds":30,"agent":{"version":"9.9.9","sha256":"%s","url":"http://%s/descarga"}}`, strings.Repeat("ab", 32), r.Host)
+		case "/agente/caida":
+			time.Sleep(300 * time.Millisecond) // un servidor lento
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case "/descarga":
+			b, _ := os.ReadFile(filepath.Join(dir, caida.Archivo))
+			if strings.TrimSpace(string(b)) == "" {
+				vaciadoAlBajar.CompareAndSwap(0, 1)
+			} else {
+				vaciadoAlBajar.CompareAndSwap(0, 2)
+			}
+			w.WriteHeader(404)
+		default:
+			_, _ = w.Write([]byte(`{"jobs":[]}`))
+		}
+	}))
+	defer srv.Close()
+
+	dir = t.TempDir()
+	soltarArchivoDeCaidas(t)
+	t.Setenv("MANDUCAR_IMPRESION_CONFIG", filepath.Join(dir, "impresion.json"))
+	if err := config.Save(config.Config{Server: srv.URL, Token: "tok", AgentID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, caida.Archivo), []byte("panic: se cayó la otra vez\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ran := make(chan error, 1)
+	go func() { ran <- Run(ctx, "test") }()
+
+	waitFor(t, 3*time.Second, "no intentó bajar la actualización", func() bool { return vaciadoAlBajar.Load() != 0 })
+	cancel()
+	<-ran
+	if vaciadoAlBajar.Load() != 1 {
+		t.Fatal("empezó a actualizarse con la caída todavía sin contar")
+	}
+}
+
+func TestVersionNumerica(t *testing.T) {
+	casos := map[string]struct {
+		x  [3]int
+		ok bool
+	}{
+		"0.1.9":       {[3]int{0, 1, 9}, true},
+		"0.1.10":      {[3]int{0, 1, 10}, true},
+		"v1.2.3":      {[3]int{1, 2, 3}, true},
+		"0.1.9-rc1":   {[3]int{0, 1, 9}, true},
+		"0.0.1-vigia": {[3]int{0, 0, 1}, true},
+		"dev":         {ok: false},
+		"test":        {ok: false},
+		"0.1":         {ok: false},
+		"":            {ok: false},
+	}
+	for v, c := range casos {
+		x, ok := versionNumerica(v)
+		if ok != c.ok || (ok && x != c.x) {
+			t.Errorf("versionNumerica(%q) = %v, %v; quiero %v, %v", v, x, ok, c.x, c.ok)
+		}
+	}
+}
+
+// Las versiones anteriores a la 0.1.9 no entienden «vigilar»: un agente
+// vigilado que se bajara a una de ésas dejaría la computadora sin agente en el
+// próximo inicio de sesión. Las que no son X.Y.Z (las de desarrollo, las del
+// E2E) no se frenan nunca.
+func TestUnaBajaQueRompeElArranqueConVigia(t *testing.T) {
+	casos := []struct {
+		propia, anunciada string
+		vigilado, frena   bool
+	}{
+		{"0.1.9", "0.1.8", true, true},
+		{"0.1.9", "0.1.8", false, false},
+		{"0.1.9", "0.1.10", true, false},
+		{"0.1.10", "0.1.9", true, false},
+		{"0.2.0", "0.1.8", true, true},
+		{"0.1.9-rc1", "0.1.8", true, true},
+		{"0.1.8", "0.1.7", true, false}, // la propia es de antes del vigía: no hay arranque que romper
+		{"0.0.1-vigia", "0.0.2-vigia", true, false},
+		{"0.0.2-vigia", "0.0.1-vigia", true, false},
+		{"dev", "0.1.8", true, false},
+		{"0.1.9", "dev", true, false},
+	}
+	for _, c := range casos {
+		if got := bajaSinVigia(c.propia, c.anunciada, c.vigilado); got != c.frena {
+			t.Errorf("bajaSinVigia(%q, %q, vigilado %v) = %v; quiero %v", c.propia, c.anunciada, c.vigilado, got, c.frena)
+		}
+	}
+}
+
+// En el runner: la baja anunciada no queda pendiente, se avisa en el log una
+// vez por anuncio, y una versión que sí sirve se toma como siempre.
+func TestElVigiladoNoSeBajaAntesDelVigia(t *testing.T) {
+	var buf lockedBuffer
+	viejo := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(viejo)
+
+	r := testRunner(t, "http://127.0.0.1:0")
+	r.version, r.vigilado = "0.1.9", true
+	baja := &api.Release{Version: "0.1.8", SHA256: "aa", URL: "http://x/0.1.8"}
+
+	r.anunciada(baja)
+	r.anunciada(baja)
+	if r.pending != nil {
+		t.Fatalf("quedó pendiente %+v", r.pending)
+	}
+	aviso := "no bajo a 0.1.8: las versiones anteriores a la 0.1.9 no entienden el arranque con vigía; una vuelta atrás tiene que salir como versión nueva"
+	if n := strings.Count(buf.String(), aviso); n != 1 {
+		t.Errorf("el aviso salió %d veces:\n%s", n, buf.String())
+	}
+
+	sube := &api.Release{Version: "0.1.10", SHA256: "bb", URL: "http://x/0.1.10"}
+	r.anunciada(sube)
+	if r.pending != sube {
+		t.Errorf("pending = %+v; quiero la 0.1.10", r.pending)
+	}
+
+	// Sin vigía, la misma baja se toma: el que la publica sabe lo que hace.
+	r.vigilado = false
+	r.anunciada(baja)
+	if r.pending != baja {
+		t.Errorf("sin vigía, pending = %+v; quiero la 0.1.8", r.pending)
+	}
+
+	// La propia no se anuncia como pendiente.
+	r.pending = nil
+	r.anunciada(&api.Release{Version: r.version})
+	if r.pending != nil {
+		t.Errorf("la versión propia quedó pendiente")
 	}
 }

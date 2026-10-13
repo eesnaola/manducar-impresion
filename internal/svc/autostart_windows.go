@@ -12,6 +12,8 @@ import (
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
+
+	"github.com/eesnaola/manducar-impresion/internal/config"
 )
 
 // En Windows no hay servicios «de usuario»: el Service Control Manager pide
@@ -46,7 +48,7 @@ func wscriptPath() string {
 // usuario —HKCU, que se escribe sin permisos— y lo arranca ya.
 func autostartInstall(exe, cfgPath string) error {
 	vbs := launcherPath(exe)
-	if err := os.WriteFile(vbs, []byte(vbsLauncher(exe, cfgPath, "correr", "--log-archivo")), 0o644); err != nil {
+	if err := escribirLanzador(vbs, lanzadorDelAgente(exe, cfgPath)); err != nil {
 		return fmt.Errorf("escribir %s: %w", vbs, err)
 	}
 	k, _, err := registry.CreateKey(registry.CURRENT_USER, runKeyPath, registry.SET_VALUE)
@@ -178,4 +180,63 @@ func checkPrivileges(system bool) error {
 		fmt.Fprintln(os.Stderr, "ojo: esta terminal es de administrador. El agente va a arrancar con el usuario de ESTA terminal; si el que atiende el mostrador es otro, cerrala y corré el comando en una terminal común de esa cuenta.")
 	}
 	return nil
+}
+
+// PasarAlVigia pasa una instalación de usuario de antes de la 0.1.9 al
+// lanzador con vigía: reescribe el .vbs para que arranque «vigilar» y lo
+// lanza. Devuelve true si lo hizo, y entonces el que llama tiene que salir
+// para no quedar dos agentes. Sin instalación de usuario, con el .vbs ya
+// vigilando o si el que corre es otra copia del ejecutable, no hace nada.
+func PasarAlVigia() (bool, error) {
+	anotado, hay := runValue()
+	if !hay {
+		return false, nil
+	}
+	vbs := vbsFromRunValue(anotado)
+	if vbs == "" {
+		return false, nil
+	}
+	actual, err := os.ReadFile(vbs)
+	if err != nil {
+		return false, err
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return false, err
+	}
+	if !necesitaVigia(string(actual), exe) {
+		return false, nil
+	}
+	cfgPath, err := config.Path()
+	if err != nil {
+		return false, err
+	}
+	if err := escribirLanzador(vbs, lanzadorDelAgente(exe, cfgPath)); err != nil {
+		return false, err
+	}
+	return true, startHidden(vbs)
+}
+
+// escribirLanzador deja el .vbs escrito de una: primero en un archivo de al
+// lado y después renombrado encima (en Windows, os.Rename reemplaza el que
+// estaba). Un corte de luz o un proceso muerto a la mitad no puede dejar un
+// lanzador cortado, que al próximo inicio de sesión no arrancaría nada.
+func escribirLanzador(vbs, contenido string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(vbs), filepath.Base(vbs)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name()) // si se renombró, ya no está y no pasa nada
+	if _, err := tmp.WriteString(contenido); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), vbs)
 }

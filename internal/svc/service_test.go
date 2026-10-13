@@ -2,6 +2,7 @@ package svc
 
 import (
 	"context"
+	"log"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -19,7 +20,7 @@ import (
 func TestOpenLogCreatesAndAppends(t *testing.T) {
 	dir := t.TempDir()
 
-	f, err := openLog(dir)
+	f, err := openLog(dir, "impresion.log")
 	if err != nil {
 		t.Fatalf("abrir: %v", err)
 	}
@@ -28,7 +29,7 @@ func TestOpenLogCreatesAndAppends(t *testing.T) {
 	}
 	f.Close()
 
-	f2, err := openLog(dir)
+	f2, err := openLog(dir, "impresion.log")
 	if err != nil {
 		t.Fatalf("reabrir: %v", err)
 	}
@@ -47,6 +48,33 @@ func TestOpenLogCreatesAndAppends(t *testing.T) {
 	}
 }
 
+// El vigía escribe en vigia.log y no toca impresion.log: si lo tuviera
+// abierto todo el día, en Windows el agente no podría rotarlo al arrancar.
+func TestElVigiaEscribeEnSuPropioLog(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("MANDUCAR_IMPRESION_CONFIG", filepath.Join(dir, "impresion.json"))
+	antes := log.Writer()
+	t.Cleanup(func() {
+		if f, ok := log.Writer().(*os.File); ok && log.Writer() != antes {
+			f.Close()
+		}
+		log.SetOutput(antes)
+	})
+
+	if err := LogDelVigiaToFile(); err != nil {
+		t.Fatal(err)
+	}
+	log.Print("vigía: arranco el agente")
+
+	got, err := os.ReadFile(filepath.Join(dir, LogVigia))
+	if err != nil || !strings.Contains(string(got), "vigía: arranco el agente") {
+		t.Fatalf("vigia.log = %q, %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "impresion.log")); !os.IsNotExist(err) {
+		t.Errorf("el vigía abrió impresion.log (err = %v)", err)
+	}
+}
+
 // Pasado el tamaño, el log se rota: lo viejo queda en `impresion.log.1` y el
 // nuevo arranca vacío. Sin esto, la computadora del local se queda sin disco.
 func TestOpenLogRotatesWhenItGrows(t *testing.T) {
@@ -55,7 +83,7 @@ func TestOpenLogRotatesWhenItGrows(t *testing.T) {
 	logMaxBytes = 16
 	defer func() { logMaxBytes = viejo }()
 
-	f, err := openLog(dir)
+	f, err := openLog(dir, "impresion.log")
 	if err != nil {
 		t.Fatalf("abrir: %v", err)
 	}
@@ -64,7 +92,7 @@ func TestOpenLogRotatesWhenItGrows(t *testing.T) {
 	}
 	f.Close()
 
-	f2, err := openLog(dir)
+	f2, err := openLog(dir, "impresion.log")
 	if err != nil {
 		t.Fatalf("reabrir: %v", err)
 	}

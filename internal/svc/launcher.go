@@ -119,3 +119,19 @@ func quoteWindowsArg(s string) string {
 func runKeyCommand(wscript, vbs string) string {
 	return quotePath(wscript) + " " + quotePath(vbs)
 }
+
+// lanzadorDelAgente es el .vbs que deja «instalar»: arranca el vigía, que
+// corre el agente y lo levanta si se cae (ver internal/vigia).
+func lanzadorDelAgente(exe, cfgPath string) string {
+	return vbsLauncher(exe, cfgPath, "vigilar", "--log-archivo")
+}
+
+// necesitaVigia: ¿este .vbs es el lanzador de antes del vigía para este
+// ejecutable? Tiene que nombrar al mismo ejecutable —si no, el que corre es
+// otra copia, una que alguien bajó y abrió a mano, y no se queda con el
+// arranque— y arrancar «correr».
+func necesitaVigia(vbs, exe string) bool {
+	return strings.Contains(strings.ToLower(vbs), strings.ToLower(exe)) &&
+		strings.Contains(vbs, " correr") &&
+		!strings.Contains(vbs, " vigilar")
+}

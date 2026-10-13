@@ -658,15 +658,29 @@ func RunAsService(version string) int {
 	return 0
 }
 
+// LogVigia es el log del vigía, aparte del del agente.
+const LogVigia = "vigia.log"
+
 // LogToFile manda el log al archivo de siempre, con su rotación. Lo usan el
 // servicio y `correr --log-archivo`, que es como lo lanza el .vbs de Windows:
 // ahí tampoco hay dónde mostrar nada.
 func LogToFile() error {
+	return logA("impresion.log")
+}
+
+// LogDelVigiaToFile manda el log del vigía a vigia.log. No a impresion.log: el
+// vigía corre todo el día, y si lo tuviera abierto el agente no podría rotarlo
+// al arrancar (en Windows no se renombra un archivo que otro tiene abierto).
+func LogDelVigiaToFile() error {
+	return logA(LogVigia)
+}
+
+func logA(nombre string) error {
 	dir, err := config.Dir()
 	if err != nil {
 		return err
 	}
-	f, err := openLog(dir)
+	f, err := openLog(dir, nombre)
 	if err != nil {
 		return err
 	}
@@ -674,15 +688,15 @@ func LogToFile() error {
 	return nil
 }
 
-// openLog abre (creando si hace falta) impresion.log al lado de dir, para
-// agregar al final. Si el que había ya es grande, se lo guarda como
-// `impresion.log.1` y se arranca uno nuevo: una vuelta atrás alcanza para
+// openLog abre (creando si hace falta) ese log al lado de dir, para agregar
+// al final. Si el que había ya es grande, se lo guarda con «.1» atrás
+// (`impresion.log.1`) y se arranca uno nuevo: una vuelta atrás alcanza para
 // ver qué pasó, y el disco no se llena.
-func openLog(dir string) (*os.File, error) {
+func openLog(dir, nombre string) (*os.File, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	p := filepath.Join(dir, "impresion.log")
+	p := filepath.Join(dir, nombre)
 	if info, err := os.Stat(p); err == nil && info.Size() > logMaxBytes {
 		_ = os.Remove(p + ".1")
 		if err := os.Rename(p, p+".1"); err != nil {

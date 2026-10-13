@@ -83,6 +83,11 @@ func (c *Client) Report(ctx context.Context, jobID int, r Result) error {
 	return c.post(ctx, fmt.Sprintf("/agente/trabajos/%d/resultado", jobID), r, nil)
 }
 
+// ReportCrash cuenta la caída anterior del agente (ver internal/caida).
+func (c *Client) ReportCrash(ctx context.Context, r CrashReport) error {
+	return c.post(ctx, "/agente/caida", r, nil)
+}
+
 func (c *Client) post(ctx context.Context, path string, body any, out any) error {
 	raw, err := json.Marshal(body)
 	if err != nil {

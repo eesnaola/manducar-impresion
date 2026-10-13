@@ -183,3 +183,32 @@ func TestInstallPathUserVsSystem(t *testing.T) {
 		t.Fatal("MANDUCAR_IMPRESION_BIN tiene que mandar en los dos modos")
 	}
 }
+
+func TestElLanzadorDelAgenteArrancaElVigia(t *testing.T) {
+	got := lanzadorDelAgente(`C:\Users\admin\AppData\Local\Manducar\manducar-impresion.exe`, `C:\Users\admin\AppData\Roaming\manducar\impresion.json`)
+	if !strings.Contains(got, `manducar-impresion.exe"" vigilar --log-archivo`) {
+		t.Fatalf("el lanzador no arranca vigilar:\n%s", got)
+	}
+}
+
+func TestNecesitaVigia(t *testing.T) {
+	exe := `C:\Users\admin\AppData\Local\Manducar\manducar-impresion.exe`
+	viejo := vbsLauncher(exe, `C:\cfg\impresion.json`, "correr", "--log-archivo")
+	casos := []struct {
+		nombre string
+		vbs    string
+		exe    string
+		quiero bool
+	}{
+		{"el de antes del vigía, para este ejecutable", viejo, exe, true},
+		{"mayúsculas distintas en la ruta: Windows no las distingue", viejo, strings.ToUpper(exe), true},
+		{"ya vigila", lanzadorDelAgente(exe, `C:\cfg\impresion.json`), exe, false},
+		{"es de otra copia: la que alguien bajó y abrió a mano no se queda con el arranque", viejo, `C:\Users\admin\Downloads\manducar-impresion.exe`, false},
+		{"no es nuestro", "MsgBox \"hola\"", exe, false},
+	}
+	for _, c := range casos {
+		if got := necesitaVigia(c.vbs, c.exe); got != c.quiero {
+			t.Errorf("%s: necesitaVigia = %v", c.nombre, got)
+		}
+	}
+}

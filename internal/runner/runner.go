@@ -9,16 +9,21 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/eesnaola/manducar-impresion/internal/api"
+	"github.com/eesnaola/manducar-impresion/internal/caida"
 	"github.com/eesnaola/manducar-impresion/internal/config"
 	"github.com/eesnaola/manducar-impresion/internal/outbox"
 	"github.com/eesnaola/manducar-impresion/internal/printer"
 	"github.com/eesnaola/manducar-impresion/internal/update"
+	"github.com/eesnaola/manducar-impresion/internal/vigia"
 	"github.com/eesnaola/manducar-impresion/internal/wake"
 )
 
@@ -114,19 +119,31 @@ type runner struct {
 	// pulsando evita pisar un pulso con el siguiente si uno se colgara.
 	pulsando atomic.Bool
 
+	// crashDir es donde está impresion.crash (el mismo directorio que la
+	// configuración y el log). Vacío en los tests que no lo usan.
+	crashDir string
+	// caidaInformada: la caída anterior se cuenta una sola vez por arranque.
+	caidaInformada atomic.Bool
+
+	// vigilado: lo corre el vigía (ver internal/vigia), que es lo que arranca
+	// el lanzador de Windows desde la 0.1.9.
+	vigilado bool
+
 	// Lo de la actualización lo toca sólo el latido, que es uno solo.
 	pending  *api.Release // versión anunciada por el servidor
 	failed   *api.Release // la última que no se pudo aplicar
 	failedAt time.Time    // cuándo falló, para no reintentarla cada 30 s
+	rehusada string       // la última baja que no se instaló, para avisarla una vez
 }
 
 func newRunner(cfg config.Config, out *outbox.Outbox, version string) *runner {
 	r := &runner{
-		cfg:     cfg,
-		out:     out,
-		version: version,
-		write:   printer.Write,
-		spool:   printer.Spool,
+		cfg:      cfg,
+		out:      out,
+		version:  version,
+		write:    printer.Write,
+		spool:    printer.Spool,
+		vigilado: os.Getenv(vigia.EnvVigilado) != "",
 		probe: func(ctx context.Context, t api.Target) string {
 			return string(printer.Probe(ctx, printer.NewTarget(t.Kind, t.Address, t.SystemName)))
 		},
@@ -161,6 +178,10 @@ func Run(ctx context.Context, version string) error {
 		return err
 	}
 	r := newRunner(cfg, out, version)
+	r.crashDir = filepath.Dir(cfgPath)
+	if err := caida.Preparar(r.crashDir); err != nil {
+		log.Println("no se pudo preparar el archivo de caídas:", err)
+	}
 	log.Printf("manducar-impresion %s — servidor %s, agente %d", version, cfg.Server, cfg.AgentID)
 
 	// Los trabajos corren con su propio contexto: al salir se les da un rato
@@ -252,8 +273,8 @@ func (r *runner) heartbeatLoop(ctx context.Context) {
 			if res.Mercure.JWT != "" {
 				r.setMercure(config.Mercure(res.Mercure))
 			}
-			if res.Agent != nil && res.Agent.Version != r.version {
-				r.pending = res.Agent
+			if res.Agent != nil {
+				r.anunciada(res.Agent)
 			}
 			if res.JobsPending > 0 {
 				r.kickFetch(false)
@@ -264,12 +285,57 @@ func (r *runner) heartbeatLoop(ctx context.Context) {
 			if len(res.Printers) > 0 {
 				go r.pulsarImpresoras(ctx, res.Printers)
 			}
+			// Después del primer latido bueno: si el arranque anterior
+			// terminó en una caída, se cuenta ahora (una sola vez, con su
+			// plazo). Acá y no en una goroutine, antes de la actualización:
+			// una que sale con el informe en el aire lo dejaría contado y sin
+			// vaciar, y el arranque siguiente lo contaría de nuevo.
+			if !r.caidaInformada.Load() {
+				r.informarCaida(ctx)
+			}
 			r.maybeUpdate(ctx)
 		}
 		if !sleep(ctx, every) {
 			return
 		}
 	}
+}
+
+// informarCaida cuenta la caída que haya quedado anotada en impresion.crash.
+// Una sola vez por arranque; si el servidor no la toma, el archivo queda y se
+// intenta en el arranque siguiente.
+func (r *runner) informarCaida(ctx context.Context) {
+	if r.crashDir == "" || !r.caidaInformada.CompareAndSwap(false, true) {
+		return
+	}
+	inf, err := caida.Leer(r.crashDir, r.version)
+	if errors.Is(err, caida.ErrNoEsCaida) {
+		// No se cuenta, pero se vacía: si quedara, se mezclaría con la
+		// próxima caída de verdad.
+		log.Printf("%v (lo vacío sin contarlo)", err)
+		if err := caida.Vaciar(r.crashDir); err != nil {
+			log.Println("no se pudo vaciar el archivo de la caída:", err)
+		}
+		return
+	}
+	if err != nil {
+		log.Println("no se pudo leer la caída anotada:", err)
+		return
+	}
+	if inf == nil {
+		return
+	}
+	c, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	if err := r.api().ReportCrash(c, *inf); err != nil {
+		log.Println("no se pudo contar la caída al servidor (queda para el próximo arranque):", err)
+		return
+	}
+	if err := caida.Vaciar(r.crashDir); err != nil {
+		log.Println("no se pudo vaciar el archivo de la caída:", err)
+		return
+	}
+	log.Printf("conté al servidor la caída anterior: %s", inf.Resumen)
 }
 
 // systemPrinters lista las impresoras del sistema con un plazo: un CUPS
@@ -753,6 +819,72 @@ func (r *runner) flusher(jobCtx context.Context) {
 			r.out.Flush(jobCtx, r.api().Report)
 		}
 	}
+}
+
+// versionDelVigia es desde cuándo el lanzador de Windows arranca «vigilar».
+const versionDelVigia = "0.1.9"
+
+// reVersion: el X.Y.Z del principio de una versión («0.1.9», «0.1.9-rc1»).
+var reVersion = regexp.MustCompile(`^v?(\d+)\.(\d+)\.(\d+)`)
+
+// versionNumerica saca el X.Y.Z del principio de una versión. Las que no
+// empiezan así («dev», una compilada a mano) no se pueden comparar.
+func versionNumerica(v string) ([3]int, bool) {
+	m := reVersion.FindStringSubmatch(v)
+	if m == nil {
+		return [3]int{}, false
+	}
+	var x [3]int
+	for i := range x {
+		n, err := strconv.Atoi(m[i+1])
+		if err != nil {
+			return [3]int{}, false
+		}
+		x[i] = n
+	}
+	return x, true
+}
+
+func anterior(a, b [3]int) bool {
+	for i := range a {
+		if a[i] != b[i] {
+			return a[i] < b[i]
+		}
+	}
+	return false
+}
+
+// bajaSinVigia: ¿instalar la anunciada dejaría sin agente a esta computadora?
+// Las versiones anteriores a la 0.1.9 no entienden «vigilar», que es lo que
+// arranca el lanzador desde entonces: en el próximo inicio de sesión no
+// arrancaría nada. Sólo importa vigilado y desde una versión con vigía; y sólo
+// si las dos son X.Y.Z, así las de desarrollo y las del E2E van y vienen.
+// Una vuelta atrás tiene que salir como versión nueva, con el código viejo.
+func bajaSinVigia(propia, anunciada string, vigilado bool) bool {
+	if !vigilado {
+		return false
+	}
+	p, ok1 := versionNumerica(propia)
+	a, ok2 := versionNumerica(anunciada)
+	desde, _ := versionNumerica(versionDelVigia)
+	return ok1 && ok2 && !anterior(p, desde) && anterior(a, desde)
+}
+
+// anunciada decide qué hacer con la versión que anuncia el latido: si es otra,
+// queda pendiente, salvo que sea una baja que rompería el arranque.
+func (r *runner) anunciada(rel *api.Release) {
+	if rel.Version == r.version {
+		return
+	}
+	if bajaSinVigia(r.version, rel.Version, r.vigilado) {
+		r.pending = nil
+		if r.rehusada != rel.Version {
+			r.rehusada = rel.Version
+			log.Printf("no bajo a %s: las versiones anteriores a la %s no entienden el arranque con vigía; una vuelta atrás tiene que salir como versión nueva", rel.Version, versionDelVigia)
+		}
+		return
+	}
+	r.pending = rel
 }
 
 // maybeUpdate actualiza sólo entre trabajos: espera un rato corto a que las
