@@ -15,6 +15,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -33,6 +34,7 @@ import (
 
 	"github.com/eesnaola/manducar-impresion/internal/api"
 	"github.com/eesnaola/manducar-impresion/internal/config"
+	"github.com/eesnaola/manducar-impresion/internal/diagnostico"
 	"github.com/eesnaola/manducar-impresion/internal/printer"
 )
 
@@ -62,9 +64,10 @@ func sondaDatatypes(t *testing.T, impresora string) {
 
 // servidorE2E reparte trabajos de a uno y anota todo lo que el agente reporta.
 type servidorE2E struct {
-	mu        sync.Mutex
-	porDar    []map[string]any
-	reportado map[int][]api.Result
+	mu           sync.Mutex
+	porDar       []map[string]any
+	reportado    map[int][]api.Result
+	diagnosticos map[int]json.RawMessage
 }
 
 func (s *servidorE2E) armar(id int, printerName, payload string) {
@@ -82,6 +85,30 @@ func (s *servidorE2E) resultados(id int) []api.Result {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]api.Result(nil), s.reportado[id]...)
+}
+
+// armarDiagnostico encola un DIAGNOSTIC como lo arma el servidor de verdad.
+func (s *servidorE2E) armarDiagnostico(id, diag int, printerName string, pasos []map[string]any) {
+	doc, _ := json.Marshal(map[string]any{"diagnostico": diag, "pasos": pasos})
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.porDar = append(s.porDar, map[string]any{
+		"id":      id,
+		"kind":    "DIAGNOSTIC",
+		"printer": map[string]any{"kind": "system", "systemName": printerName},
+		"payload": base64.StdEncoding.EncodeToString(doc),
+	})
+}
+
+func (s *servidorE2E) diagnostico(id int) (diagnostico.Resultado, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	raw, ok := s.diagnosticos[id]
+	var res diagnostico.Resultado
+	if ok {
+		_ = json.Unmarshal(raw, &res)
+	}
+	return res, ok
 }
 
 func (s *servidorE2E) handler() http.HandlerFunc {
@@ -105,6 +132,16 @@ func (s *servidorE2E) handler() http.HandlerFunc {
 			id, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/agente/trabajos/"), "/resultado"))
 			s.mu.Lock()
 			s.reportado[id] = append(s.reportado[id], res)
+			s.mu.Unlock()
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case strings.HasPrefix(r.URL.Path, "/agente/diagnosticos/"):
+			id, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/agente/diagnosticos/"), "/resultado"))
+			raw, _ := io.ReadAll(r.Body)
+			s.mu.Lock()
+			if s.diagnosticos == nil {
+				s.diagnosticos = map[int]json.RawMessage{}
+			}
+			s.diagnosticos[id] = raw
 			s.mu.Unlock()
 			_, _ = w.Write([]byte(`{"ok":true}`))
 		default:
@@ -1058,5 +1095,166 @@ func TestE2EWindowsVigiaMigracion(t *testing.T) {
 	}
 	if agente.ppid != vigia.pid {
 		t.Errorf("el agente (pid %d) no es hijo del vigía (pid %d): su padre es %d", agente.pid, vigia.pid, agente.ppid)
+	}
+}
+
+func paso(n int, renglon, accion string, extra map[string]any) map[string]any {
+	p := map[string]any{"n": n, "renglon": renglon, "accion": accion, "veces": 1}
+	for k, v := range extra {
+		p[k] = v
+	}
+	return p
+}
+
+// El diagnóstico entero contra el spooler de verdad, con la impresora de
+// archivo del workflow: como un trabajo y por la cola sale; lo directo y el
+// estado no aplican (un puerto de archivo no tiene aparato ni TCP detrás); y
+// el entorno trae el driver y el puerto.
+func TestE2EWindowsDiagnostico(t *testing.T) {
+	impresora := os.Getenv("MANDUCAR_E2E_PRINTER")
+	if impresora == "" {
+		impresora = "ManducarE2E"
+	}
+	archivo := os.Getenv("MANDUCAR_E2E_ARCHIVO")
+	if archivo == "" {
+		archivo = `C:\e2e\salida.prn`
+	}
+	if _, err := ps(t, "Get-Printer -Name '"+impresora+"' | Out-Null"); err != nil {
+		t.Skipf("no está la impresora %s: la arma el workflow", impresora)
+	}
+	_, _ = ps(t, "Get-PrintJob -PrinterName '"+impresora+"' | Remove-PrintJob")
+
+	srv := &servidorE2E{reportado: map[int][]api.Result{}}
+	web := httptest.NewServer(srv.handler())
+	defer web.Close()
+	dir := t.TempDir()
+	soltarArchivoDeCaidas(t)
+	t.Setenv("MANDUCAR_IMPRESION_CONFIG", filepath.Join(dir, "impresion.json"))
+	if err := config.Save(config.Config{Server: web.URL, Token: "tok", AgentID: 1, Store: "E2E"}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	terminado := make(chan error, 1)
+	go func() { terminado <- Run(ctx, "e2e") }()
+
+	b64 := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+	srv.armarDiagnostico(50, 9, impresora, []map[string]any{
+		paso(1, `texto "normal"`, "mandar", map[string]any{"bytes": b64("DIAG-NORMAL\n"), "por": "normal"}),
+		paso(2, `texto "cola", por la cola`, "mandar", map[string]any{"bytes": b64("DIAG-COLA\n"), "por": "cola"}),
+		paso(3, "estado", "estado", nil),
+		paso(4, `texto "directo", directo`, "mandar", map[string]any{"bytes": b64("DIAG-DIRECTO\n"), "por": "directo"}),
+	})
+
+	esperar(t, 120*time.Second, "el resultado del diagnóstico", func() bool { _, ok := srv.diagnostico(9); return ok })
+	res, _ := srv.diagnostico(9)
+	if len(res.Pasos) != 4 {
+		t.Fatalf("pasos %+v", res.Pasos)
+	}
+	for _, i := range []int{0, 1} {
+		if !res.Pasos[i].OK || len(res.Pasos[i].Documentos) != 1 {
+			t.Errorf("paso %d: %+v", i+1, res.Pasos[i])
+		}
+	}
+	for _, i := range []int{2, 3} {
+		if res.Pasos[i].NoAplica == "" {
+			t.Errorf("paso %d tenía que no aplicar: %+v", i+1, res.Pasos[i])
+		}
+	}
+	entorno, _ := res.Entorno.(map[string]any)
+	if entorno["driver"] != "Generic / Text Only" || entorno["puerto"] != archivo {
+		t.Errorf("entorno %v", res.Entorno)
+	}
+	esperar(t, 30*time.Second, "el trabajo del diagnóstico cerrado", func() bool {
+		rs := srv.resultados(50)
+		return len(rs) > 0 && rs[0].OK
+	})
+	b, _ := os.ReadFile(archivo)
+	if !strings.Contains(string(b), "DIAG-NORMAL") || !strings.Contains(string(b), "DIAG-COLA") || strings.Contains(string(b), "DIAG-DIRECTO") {
+		t.Errorf("el archivo de la impresora tiene:\n%s", b)
+	}
+	cancel()
+	<-terminado
+}
+
+// Una cola de Windows con un Standard TCP/IP atrás: lo directo va por TCP,
+// el estado trae los cuatro bytes de la térmica y preguntar devuelve su
+// respuesta. Es el camino de puertoTCPCrudo, que en Linux no se prueba.
+func TestE2EWindowsDiagnosticoPorTCP(t *testing.T) {
+	const (
+		imp    = "ManducarDiagTCP"
+		puerto = "ManducarDiagTCP_TCP"
+	)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	tcp := ln.Addr().(*net.TCPAddr)
+	var mu sync.Mutex
+	var recibido []byte
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				buf := make([]byte, 64)
+				for {
+					_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+					n, err := c.Read(buf)
+					if err != nil {
+						return
+					}
+					mu.Lock()
+					recibido = append(recibido, buf[:n]...)
+					mu.Unlock()
+					switch {
+					case n == 3 && buf[0] == 0x10 && buf[1] == 0x04 && buf[2] == 1:
+						_, _ = c.Write([]byte{0x16})
+					case n == 3 && buf[0] == 0x10 && buf[1] == 0x04:
+						_, _ = c.Write([]byte{0x12})
+					case n == 3 && buf[0] == 0x1d && buf[1] == 0x49:
+						_, _ = c.Write([]byte{0x20})
+					}
+				}
+			}(conn)
+		}
+	}()
+	if _, err := ps(t, fmt.Sprintf("Add-PrinterPort -Name '%s' -PrinterHostAddress '127.0.0.1' -PortNumber %d", puerto, tcp.Port)); err != nil {
+		t.Skipf("no se pudo crear el puerto TCP: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = ps(t, "Remove-Printer -Name '"+imp+"' -ErrorAction SilentlyContinue; Remove-PrinterPort -Name '"+puerto+"' -ErrorAction SilentlyContinue")
+	})
+	psFatal(t, "Add-Printer -Name '"+imp+"' -DriverName 'Generic / Text Only' -PortName '"+puerto+"'")
+
+	target := api.Target{Kind: "system", SystemName: imp}
+	pasos := []diagnostico.Paso{
+		{N: 1, Accion: "estado"},
+		{N: 2, Accion: "preguntar", Bytes: []byte{0x1d, 0x49, 0x01}, EsperaMs: 1000},
+		{N: 3, Accion: "mandar", Por: "directo", Bytes: []byte("DIRECTO-TCP\n"), Pedazo: 4, Veces: 1},
+	}
+	res := diagnostico.Ejecutar(context.Background(), diagnostico.Documento{Diagnostico: 1, Pasos: pasos}, canalDeImpresora{t: target, write: printer.Write})
+
+	if res[0].Estado != "1=16 2=12 3=12 4=12" {
+		t.Errorf("estado %+v", res[0])
+	}
+	if res[1].Respuesta != "20" {
+		t.Errorf("preguntar %+v", res[1])
+	}
+	if !res[2].OK || len(res[2].Escrituras) != 3 {
+		t.Errorf("directo %+v", res[2])
+	}
+	esperar(t, 10*time.Second, "los bytes directos en la térmica", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return strings.Contains(string(recibido), "DIRECTO-TCP")
+	})
+	e := printer.DescribirEntorno(context.Background(), target)
+	if e.Direccion != tcp.String() || e.Eleccion != "puerto TCP" || e.Driver != "Generic / Text Only" {
+		t.Errorf("entorno %+v", e)
 	}
 }

@@ -57,11 +57,16 @@ type spoolerInfo struct {
 	puerto      string
 	pausada     bool
 	sinConexion bool
+	atributos   uint32
 }
 
 const (
 	printerStatusPaused         = 0x00000001
 	printerAttributeWorkOffline = 0x00000400
+	// Los atributos de la cola que cuenta el diagnóstico (PRINTER_ATTRIBUTE_*).
+	printerAttributeDirect     = 0x2
+	printerAttributeEnableBidi = 0x800
+	printerAttributeRawOnly    = 0x1000
 )
 
 type printerInfo5 struct {
@@ -107,6 +112,7 @@ func infoDelSpooler(name string) (spoolerInfo, error) {
 		out.puerto = windows.UTF16PtrToString(info5.PortName)
 	}
 	out.sinConexion = info5.Attributes&printerAttributeWorkOffline != 0
+	out.atributos = info5.Attributes
 
 	if buf, err = getPrinter(h, 6); err == nil {
 		out.pausada = (*printerInfo6)(unsafe.Pointer(&buf[0])).Status&printerStatusPaused != 0

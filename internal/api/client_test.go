@@ -119,3 +119,20 @@ func TestErrorTextIsOneShortLine(t *testing.T) {
 		t.Fatalf("el mensaje del servidor tiene que pasar tal cual: %q", got)
 	}
 }
+
+func TestReportDiagnosticMandaElResultadoASuDireccion(t *testing.T) {
+	var path string
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	err := New(srv.URL, "tok", "0.1.9").ReportDiagnostic(context.Background(), 7, map[string]any{"diagnostico": 7})
+
+	if err != nil || path != "/agente/diagnosticos/7/resultado" || body["diagnostico"] != float64(7) {
+		t.Fatalf("err %v, path %q, body %v", err, path, body)
+	}
+}

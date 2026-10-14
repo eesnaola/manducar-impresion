@@ -20,6 +20,7 @@ import (
 	"github.com/eesnaola/manducar-impresion/internal/api"
 	"github.com/eesnaola/manducar-impresion/internal/caida"
 	"github.com/eesnaola/manducar-impresion/internal/config"
+	"github.com/eesnaola/manducar-impresion/internal/diagnostico"
 	"github.com/eesnaola/manducar-impresion/internal/outbox"
 	"github.com/eesnaola/manducar-impresion/internal/printer"
 	"github.com/eesnaola/manducar-impresion/internal/update"
@@ -116,6 +117,15 @@ type runner struct {
 	spool func(context.Context, string, string) (printer.SpoolState, error)
 	// probe se inyecta en los tests; afuera es el pulso real (printer.Probe).
 	probe func(context.Context, api.Target) string
+	// El diagnóstico remoto: por dónde le habla a la impresora y qué cuenta
+	// de ella. Los tests los cambian.
+	canal   func(api.Target) diagnostico.Canal
+	entorno func(context.Context, api.Target) printer.Entorno
+	// Los diagnósticos que corren ahora, para cortarlos y esperarlos al cerrarse.
+	diagMu    sync.Mutex
+	cerrando  bool
+	diagCorte map[int]context.CancelFunc
+	diags     sync.WaitGroup
 	// pulsando evita pisar un pulso con el siguiente si uno se colgara.
 	pulsando atomic.Bool
 
@@ -156,6 +166,8 @@ func newRunner(cfg config.Config, out *outbox.Outbox, version string) *runner {
 		fetchErr:  newThrottle(logRepeatEvery),
 		listErr:   newThrottle(logRepeatEvery),
 	}
+	r.canal = func(t api.Target) diagnostico.Canal { return canalDeImpresora{t: t, write: r.write} }
+	r.entorno = printer.DescribirEntorno
 	r.client.Store(api.New(cfg.Server, cfg.Token, version))
 	return r
 }
@@ -208,6 +220,13 @@ func Run(ctx context.Context, version string) error {
 
 	<-ctx.Done()
 	log.Println("saliendo")
+	// Un diagnóstico que corre termina en el próximo paso y manda lo que
+	// tenga —el resultado parcial y el cierre del trabajo— antes del último
+	// vaciado: después de Run el proceso sale y ya no hay quién lo mande.
+	r.cortarDiagnosticos()
+	if !r.esperarDiagnosticos(diagnosticoCierre) {
+		log.Println("un diagnóstico no alcanzó a mandar su resultado")
+	}
 	if !r.waitIdle(jobCtx, shutdownWait) {
 		log.Println("quedaron trabajos sin terminar: se reportan al volver a arrancar")
 	}
@@ -612,6 +631,13 @@ func (r *runner) worker(jobCtx context.Context, q *queue) {
 
 func (r *runner) print(jobCtx context.Context, j api.Job) {
 	defer r.inFlight.Add(-1) // lo sumó enqueue
+
+	// El diagnóstico remoto no es un papel: corre sus pasos con el turno de
+	// la impresora tomado y no pasa por el selfKick ni por vigilar.
+	if j.Kind == kindDiagnostico {
+		r.correrDiagnostico(jobCtx, j)
+		return
+	}
 
 	log.Printf("→ trabajo %d (%s) a %s, %d bytes", j.ID, j.Kind, targetLabel(j.Printer), len(j.Payload))
 	turno := r.turno(j.Printer)

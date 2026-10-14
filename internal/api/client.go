@@ -88,6 +88,11 @@ func (c *Client) ReportCrash(ctx context.Context, r CrashReport) error {
 	return c.post(ctx, "/agente/caida", r, nil)
 }
 
+// ReportDiagnostic manda el resultado de un diagnóstico remoto.
+func (c *Client) ReportDiagnostic(ctx context.Context, id int, resultado any) error {
+	return c.post(ctx, fmt.Sprintf("/agente/diagnosticos/%d/resultado", id), resultado, nil)
+}
+
 func (c *Client) post(ctx context.Context, path string, body any, out any) error {
 	raw, err := json.Marshal(body)
 	if err != nil {

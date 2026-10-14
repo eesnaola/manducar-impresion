@@ -50,13 +50,25 @@ const (
 // aparato («Enum\<instancia>\Device Parameters»), y en El Caracol ahí no
 // estaba: el semáforo nunca encontró la impresora y la dio por buena. Los del
 // aparato se miran sólo si en la interfaz no está.
-func aparatosUSB(puerto string) []string {
+// primerPuerto: de «USB001,USB002» (una cola con varios puertos), el primero.
+func primerPuerto(puerto string) string {
 	if i := strings.Index(puerto, ","); i >= 0 {
-		puerto = puerto[:i]
+		return puerto[:i]
 	}
+	return puerto
+}
+
+func aparatosUSB(puerto string) []string {
+	puerto = primerPuerto(puerto)
 	if !strings.HasPrefix(strings.ToUpper(puerto), "USB") {
 		return nil
 	}
+	return elegirAparatos(listarAparatosUSB(), puerto, existeUSB)
+}
+
+// listarAparatosUSB: todos los de la clase de impresoras USB, con el puerto
+// que Windows les anotó si les anotó uno.
+func listarAparatosUSB() []aparatoUSB {
 	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Control\DeviceClasses\`+interfazUSBPrint, registry.ENUMERATE_SUB_KEYS)
 	if err != nil {
 		return nil
@@ -82,7 +94,7 @@ func aparatosUSB(puerto string) []string {
 		}
 		aparatos = append(aparatos, a)
 	}
-	return elegirAparatos(aparatos, puerto, existeUSB)
+	return aparatos
 }
 
 // puertoAnotado lee «Base Name» y «Port Number» de esa clave. Sin «Port

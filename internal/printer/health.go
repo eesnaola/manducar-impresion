@@ -118,10 +118,15 @@ func dleEot(conn net.Conn, n byte) (byte, bool) {
 // Number» (USB y 1) es el del puerto de la impresora del sistema («USB001»)?
 // Sin «Base Name», el USB de siempre.
 func coincidePuerto(base string, numero uint64, puerto string) bool {
+	return puerto != "" && strings.EqualFold(puerto, nombrePuerto(base, numero))
+}
+
+// nombrePuerto: «USB001» a partir de lo que anotó Windows.
+func nombrePuerto(base string, numero uint64) string {
 	if base == "" {
 		base = "USB"
 	}
-	return puerto != "" && strings.EqualFold(puerto, fmt.Sprintf("%s%03d", base, numero))
+	return fmt.Sprintf("%s%03d", base, numero)
 }
 
 // aparatoUSB: una entrada de la interfaz de impresión USB en el registro de
@@ -141,6 +146,13 @@ type aparatoUSB struct {
 // tienen anotado otro puerto son otra impresora y no se tocan: una pregunta
 // de estado a una láser puede salir impresa.
 func elegirAparatos(aparatos []aparatoUSB, puerto string, abre func(ruta string) bool) []string {
+	rutas, _ := elegirConMotivo(aparatos, puerto, abre)
+	return rutas
+}
+
+// elegirConMotivo es elegirAparatos diciendo cómo eligió («por puerto»,
+// «por descarte» o «ninguno»): el diagnóstico lo cuenta en el entorno.
+func elegirConMotivo(aparatos []aparatoUSB, puerto string, abre func(ruta string) bool) ([]string, string) {
 	var anotadas, abiertas []string
 	for _, a := range aparatos {
 		if a.conPuerto {
@@ -152,12 +164,12 @@ func elegirAparatos(aparatos []aparatoUSB, puerto string, abre func(ruta string)
 		}
 	}
 	if len(anotadas) > 0 {
-		return anotadas
+		return anotadas, "por puerto"
 	}
 	if len(abiertas) == 1 {
-		return abiertas
+		return abiertas, "por descarte"
 	}
-	return nil
+	return nil, "ninguno"
 }
 
 func contains(list []string, s string) bool {

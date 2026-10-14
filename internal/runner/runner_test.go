@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	"github.com/eesnaola/manducar-impresion/internal/api"
 	"github.com/eesnaola/manducar-impresion/internal/caida"
 	"github.com/eesnaola/manducar-impresion/internal/config"
+	"github.com/eesnaola/manducar-impresion/internal/diagnostico"
 	"github.com/eesnaola/manducar-impresion/internal/outbox"
 	"github.com/eesnaola/manducar-impresion/internal/printer"
 )
@@ -1382,5 +1384,298 @@ func TestElVigiladoNoSeBajaAntesDelVigia(t *testing.T) {
 	r.anunciada(&api.Release{Version: r.version})
 	if r.pending != nil {
 		t.Errorf("la versión propia quedó pendiente")
+	}
+}
+
+// esperarOutboxVacio: el flusher confirmó todo y ya no escribe el outbox,
+// que vive en el TempDir del test (si no, el borrado del final choca con la
+// última escritura).
+func esperarOutboxVacio(t *testing.T, r *runner) {
+	t.Helper()
+	waitFor(t, 3*time.Second, "el outbox vacío", func() bool { return len(r.out.Pending()) == 0 })
+}
+
+// trabajoDeDiagnostico arma un DIAGNOSTIC como lo manda el servidor.
+func trabajoDeDiagnostico(id, diag int, pasos string) api.Job {
+	return api.Job{
+		ID:      id,
+		Kind:    "DIAGNOSTIC",
+		Printer: api.Target{Kind: "network", Address: "127.0.0.1:9"},
+		Payload: []byte(fmt.Sprintf(`{"diagnostico":%d,"pasos":%s}`, diag, pasos)),
+	}
+}
+
+// servidorDeDiagnostico junta lo que el agente le cuenta de un diagnóstico y de los trabajos.
+type servidorDeDiagnostico struct {
+	mu          sync.Mutex
+	resultados  map[int]diagnostico.Resultado
+	trabajos    map[int]api.Result
+	diagnostico chan struct{}
+}
+
+func nuevoServidorDeDiagnostico(t *testing.T) (*servidorDeDiagnostico, string) {
+	s := &servidorDeDiagnostico{resultados: map[int]diagnostico.Resultado{}, trabajos: map[int]api.Result{}, diagnostico: make(chan struct{}, 10)}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var id int
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/agente/diagnosticos/"):
+			fmt.Sscanf(r.URL.Path, "/agente/diagnosticos/%d/resultado", &id)
+			var res diagnostico.Resultado
+			_ = json.NewDecoder(r.Body).Decode(&res)
+			s.mu.Lock()
+			s.resultados[id] = res
+			s.mu.Unlock()
+			s.diagnostico <- struct{}{}
+		case strings.HasPrefix(r.URL.Path, "/agente/trabajos/"):
+			fmt.Sscanf(r.URL.Path, "/agente/trabajos/%d/resultado", &id)
+			var res api.Result
+			_ = json.NewDecoder(r.Body).Decode(&res)
+			s.mu.Lock()
+			s.trabajos[id] = res
+			s.mu.Unlock()
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(srv.Close)
+	return s, srv.URL
+}
+
+func (s *servidorDeDiagnostico) trabajo(id int) (api.Result, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.trabajos[id]
+	return r, ok
+}
+
+func TestUnDiagnosticoCorreYMandaElResultado(t *testing.T) {
+	s, url := nuevoServidorDeDiagnostico(t)
+	r := testRunner(t, url)
+	var mu sync.Mutex
+	var escrito []string
+	r.write = func(_ context.Context, _ api.Target, b []byte) printer.Outcome {
+		mu.Lock()
+		escrito = append(escrito, string(b))
+		mu.Unlock()
+		return printer.Outcome{OK: true, WroteSomething: true}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.flusher(ctx)
+
+	r.enqueue(ctx, trabajoDeDiagnostico(5, 9, `[{"n":1,"renglon":"texto","accion":"mandar","bytes":"SE9MQQ==","por":"normal","veces":1},{"n":2,"renglon":"esperar 1 ms","accion":"esperar","ms":1}]`))
+
+	waitFor(t, 3*time.Second, "el cierre del trabajo del diagnóstico", func() bool { _, ok := s.trabajo(5); return ok })
+	esperarOutboxVacio(t, r)
+	s.mu.Lock()
+	res := s.resultados[9]
+	s.mu.Unlock()
+	if len(res.Pasos) != 2 || !res.Pasos[0].OK || !res.Pasos[1].OK || res.Version != "test" || res.Diagnostico != 9 {
+		t.Fatalf("resultado %+v", res)
+	}
+	if job, _ := s.trabajo(5); !job.OK {
+		t.Fatalf("el trabajo se cerró con %+v", job)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if fmt.Sprint(escrito) != "[HOLA]" {
+		t.Fatalf("escrito %v", escrito)
+	}
+}
+
+// Mientras corre el diagnóstico la impresora es suya: el semáforo no la
+// pulsa y el trabajo que llega espera a que termine (spec, «El camino»).
+func TestElDiagnosticoTieneElTurnoDeLaImpresora(t *testing.T) {
+	s, url := nuevoServidorDeDiagnostico(t)
+	r := testRunner(t, url)
+	soltar := make(chan struct{})
+	var mu sync.Mutex
+	var escrito []string
+	r.write = func(_ context.Context, _ api.Target, b []byte) printer.Outcome {
+		if string(b) == "DIAG" {
+			<-soltar
+		}
+		mu.Lock()
+		escrito = append(escrito, string(b))
+		mu.Unlock()
+		return printer.Outcome{OK: true, WroteSomething: true}
+	}
+	var pulsos atomic.Int32
+	r.probe = func(context.Context, api.Target) string { pulsos.Add(1); return "OK" }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.flusher(ctx)
+
+	diag := trabajoDeDiagnostico(5, 9, `[{"n":1,"renglon":"x","accion":"mandar","bytes":"RElBRw==","por":"normal","veces":1}]`)
+	r.enqueue(ctx, diag)
+	comun := api.Job{ID: 6, Kind: "COMANDA", Printer: diag.Printer, Payload: []byte("COMANDA")}
+	r.enqueue(ctx, comun)
+	time.Sleep(100 * time.Millisecond)
+	r.pulsarImpresoras(ctx, []api.PrinterRef{{ID: 1, Target: diag.Printer}})
+
+	if pulsos.Load() != 0 {
+		t.Fatalf("se pulsó la impresora en medio del diagnóstico (%d)", pulsos.Load())
+	}
+	mu.Lock()
+	if len(escrito) != 0 {
+		t.Fatalf("salió %v antes de que terminara el diagnóstico", escrito)
+	}
+	mu.Unlock()
+
+	close(soltar)
+	waitFor(t, 3*time.Second, "la comanda después del diagnóstico", func() bool { _, ok := s.trabajo(6); return ok })
+	esperarOutboxVacio(t, r)
+	mu.Lock()
+	defer mu.Unlock()
+	if fmt.Sprint(escrito) != "[DIAG COMANDA]" {
+		t.Fatalf("orden %v", escrito)
+	}
+}
+
+func TestUnDiagnosticoIlegibleCierraElTrabajoConError(t *testing.T) {
+	s, url := nuevoServidorDeDiagnostico(t)
+	r := testRunner(t, url)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.flusher(ctx)
+
+	r.enqueue(ctx, api.Job{ID: 5, Kind: "DIAGNOSTIC", Printer: api.Target{Kind: "network", Address: "127.0.0.1:9"}, Payload: []byte("{")})
+
+	waitFor(t, 3*time.Second, "el cierre del trabajo", func() bool { _, ok := s.trabajo(5); return ok })
+	esperarOutboxVacio(t, r)
+	job, _ := s.trabajo(5)
+	if job.OK || !strings.Contains(job.Error, "no se pudo leer") {
+		t.Fatalf("trabajo %+v", job)
+	}
+	if len(s.resultados) != 0 {
+		t.Fatal("mandó un resultado de un diagnóstico que no se leyó")
+	}
+}
+
+// El agente se cierra a la mitad: lo que corrió y lo que faltó igual llegan.
+func TestSiElAgenteSeCierraElResultadoParcialIgualSale(t *testing.T) {
+	s, url := nuevoServidorDeDiagnostico(t)
+	r := testRunner(t, url)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.flusher(ctx)
+	jobCtx, cerrar := context.WithCancel(context.Background())
+
+	r.enqueue(jobCtx, trabajoDeDiagnostico(5, 9, `[{"n":1,"renglon":"esperar 10","accion":"esperar","ms":10000},{"n":2,"renglon":"estado","accion":"estado"}]`))
+	time.Sleep(100 * time.Millisecond)
+	cerrar()
+
+	select {
+	case <-s.diagnostico:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no llegó el resultado parcial")
+	}
+	waitFor(t, 3*time.Second, "el cierre del trabajo", func() bool { _, ok := s.trabajo(5); return ok })
+	esperarOutboxVacio(t, r)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res := s.resultados[9]
+	if len(res.Pasos) != 2 || res.Pasos[1].Error != "no corrió: el agente se cerró" {
+		t.Fatalf("resultado %+v", res)
+	}
+}
+
+// Run de verdad: al cerrarse el agente con un diagnóstico corriendo, el
+// resultado parcial y el cierre del trabajo salen antes de que Run vuelva
+// (después el proceso termina con os.Exit y ya no hay quién los mande).
+func TestAlCerrarseElAgenteElDiagnosticoParcialSaleAntesDeTerminar(t *testing.T) {
+	doc, _ := json.Marshal(map[string]any{"diagnostico": 9, "pasos": []map[string]any{
+		{"n": 1, "renglon": "esperar 30", "accion": "esperar", "ms": 30000},
+		{"n": 2, "renglon": "estado", "accion": "estado"},
+	}})
+	var (
+		mu        sync.Mutex
+		dado      bool
+		resultado *diagnostico.Resultado
+		trabajo   *api.Result
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/agente/latido":
+			_, _ = w.Write([]byte(`{"mercure":{"url":"http://127.0.0.1:1/.well-known/mercure","jwt":"j","topic":"t"},"agent":null,"jobsPending":1,"heartbeatSeconds":5}`))
+			return
+		case "/agente/trabajos":
+			mu.Lock()
+			defer mu.Unlock()
+			if dado {
+				_, _ = w.Write([]byte(`{"jobs":[]}`))
+				return
+			}
+			dado = true
+			_ = json.NewEncoder(w).Encode(map[string]any{"jobs": []map[string]any{{
+				"id": 5, "kind": "DIAGNOSTIC", "printer": map[string]any{"kind": "network", "address": "127.0.0.1:9"},
+				"payload": base64.StdEncoding.EncodeToString(doc),
+			}}})
+			return
+		case "/agente/diagnosticos/9/resultado":
+			var res diagnostico.Resultado
+			_ = json.NewDecoder(r.Body).Decode(&res)
+			mu.Lock()
+			resultado = &res
+			mu.Unlock()
+		case "/agente/trabajos/5/resultado":
+			var res api.Result
+			_ = json.NewDecoder(r.Body).Decode(&res)
+			mu.Lock()
+			trabajo = &res
+			mu.Unlock()
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	soltarArchivoDeCaidas(t)
+	t.Setenv("MANDUCAR_IMPRESION_CONFIG", filepath.Join(dir, "impresion.json"))
+	if err := config.Save(config.Config{Server: srv.URL, Token: "tok", AgentID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	termino := make(chan error, 1)
+	go func() { termino <- Run(ctx, "test") }()
+
+	waitFor(t, 5*time.Second, "que el agente tome el diagnóstico", func() bool { mu.Lock(); defer mu.Unlock(); return dado })
+	time.Sleep(300 * time.Millisecond) // ya está en el «esperar 30»
+	cancel()
+	select {
+	case <-termino:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run no volvió")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if resultado == nil || len(resultado.Pasos) != 2 || !strings.Contains(resultado.Pasos[0].Error, "se cortó") || resultado.Pasos[1].Error != "no corrió: el agente se cerró" {
+		t.Fatalf("resultado %+v", resultado)
+	}
+	if trabajo == nil || !trabajo.OK {
+		t.Fatalf("el trabajo no se cerró antes de que Run volviera: %+v", trabajo)
+	}
+}
+
+// preguntar devuelve lo que contesta del otro lado: en una impresora de
+// red, sólo hacia puertos de impresora. Si no, un servidor tomado podría
+// leer cualquier servicio de la red del local.
+func TestPreguntarEnUnaDeRedSoloVaAPuertosDeImpresora(t *testing.T) {
+	casos := []struct {
+		t      api.Target
+		aplica bool
+	}{
+		{api.Target{Kind: "network", Address: "192.168.0.50:9100"}, true},
+		{api.Target{Kind: "network", Address: "192.168.0.50:9109"}, true},
+		{api.Target{Kind: "network", Address: "192.168.0.1:80"}, false},
+		{api.Target{Kind: "network", Address: "192.168.0.1:22"}, false},
+		{api.Target{Kind: "network", Address: "sin-puerto"}, false},
+		{api.Target{Kind: "system", SystemName: "Barra"}, true},
+	}
+	for _, c := range casos {
+		err := canalDeImpresora{t: c.t}.PuedePreguntar()
+		if c.aplica != (err == nil) || (err != nil && !errors.Is(err, printer.ErrNoAplica)) {
+			t.Errorf("%+v: %v", c.t, err)
+		}
 	}
 }

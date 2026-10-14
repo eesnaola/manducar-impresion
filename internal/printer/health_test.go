@@ -168,3 +168,22 @@ func TestElegirAparatos(t *testing.T) {
 		}
 	}
 }
+
+// El diagnóstico cuenta cómo se eligió el aparato: por el puerto que anotó
+// Windows, por descarte (El Caracol) o ninguno.
+func TestElegirConMotivo(t *testing.T) {
+	conPuerto := func(ruta string, numero uint64) aparatoUSB {
+		return aparatoUSB{ruta: ruta, base: "USB", numero: numero, conPuerto: true}
+	}
+	abre := func(string) bool { return true }
+
+	if rutas, motivo := elegirConMotivo([]aparatoUSB{conPuerto("a", 2)}, "USB002", abre); motivo != "por puerto" || len(rutas) != 1 {
+		t.Errorf("por puerto: %v %q", rutas, motivo)
+	}
+	if rutas, motivo := elegirConMotivo([]aparatoUSB{{ruta: "b"}}, "USB002", abre); motivo != "por descarte" || len(rutas) != 1 {
+		t.Errorf("por descarte: %v %q", rutas, motivo)
+	}
+	if rutas, motivo := elegirConMotivo(nil, "USB002", abre); motivo != "ninguno" || rutas != nil {
+		t.Errorf("ninguno: %v %q", rutas, motivo)
+	}
+}
