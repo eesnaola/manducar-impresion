@@ -24,8 +24,13 @@ const (
 	HealthCoverOpen   Health = "COVER_OPEN"
 	HealthSilent      Health = "SILENT"      // contesta el TCP pero no el DLE EOT
 	HealthUnreachable Health = "UNREACHABLE" // ni el TCP
-	HealthStopped     Health = "STOPPED"     // del sistema: existe pero frenada
-	HealthMissing     Health = "MISSING"     // del sistema: ya no está en la lista
+	// HealthCoverOrPaper: una USB que se deja abrir pero no acepta la pregunta, o
+	// que contestaba y dejó de contestar. Prendida y frenada: la POS-58 hace eso
+	// con la tapa abierta y sin papel por igual. El servidor lo entiende desde
+	// el que salió con la 0.1.9.
+	HealthCoverOrPaper Health = "COVER_OR_PAPER"
+	HealthStopped      Health = "STOPPED" // del sistema: existe pero frenada
+	HealthMissing      Health = "MISSING" // del sistema: ya no está en la lista
 )
 
 const (
@@ -179,4 +184,19 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// saludUSB: lo que se informa de una impresora USB que se dejó abrir. La
+// POS-58 de El Caracol, con la tapa abierta o sin papel, titila igual y deja
+// de contestar: primero no contesta la pregunta y después ni la acepta. Una
+// que no acepta la pregunta está prendida y frenada; una que no contesta pero
+// contestaba antes, también. Una que nunca contestó no informa estado.
+func saludUSB(acepto bool, salud Health, contestabaAntes bool) Health {
+	switch {
+	case !acepto:
+		return HealthCoverOrPaper
+	case salud == HealthSilent && contestabaAntes:
+		return HealthCoverOrPaper
+	}
+	return salud
 }

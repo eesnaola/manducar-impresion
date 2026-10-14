@@ -187,3 +187,27 @@ func TestElegirConMotivo(t *testing.T) {
 		t.Errorf("ninguno: %v %q", rutas, motivo)
 	}
 }
+
+// La POS-58 USB de El Caracol con la tapa abierta o sin papel titila igual:
+// primero no contesta la pregunta y después ni la acepta (14/10/2026).
+func TestSaludUSB(t *testing.T) {
+	casos := []struct {
+		nombre          string
+		acepto          bool
+		salud           Health
+		contestabaAntes bool
+		quiero          Health
+	}{
+		{"no acepta la pregunta: prendida y frenada", false, HealthSilent, false, HealthCoverOrPaper},
+		{"no acepta la pregunta, y contestaba", false, HealthSilent, true, HealthCoverOrPaper},
+		{"dejó de contestar", true, HealthSilent, true, HealthCoverOrPaper},
+		{"nunca contestó: no informa estado", true, HealthSilent, false, HealthSilent},
+		{"contesta bien", true, HealthOK, true, HealthOK},
+		{"contesta que no tiene papel", true, HealthNoPaper, false, HealthNoPaper},
+	}
+	for _, c := range casos {
+		if got := saludUSB(c.acepto, c.salud, c.contestabaAntes); got != c.quiero {
+			t.Errorf("%s: %s, quiero %s", c.nombre, got, c.quiero)
+		}
+	}
+}

@@ -85,8 +85,9 @@ type Canal interface {
 	Cola(ctx context.Context, b []byte) error
 	// Directo abre la impresora sin la cola (printer.ErrNoAplica si no hay cómo).
 	Directo(ctx context.Context) (printer.Directo, error)
-	// PuedePreguntar dice si a esta impresora se le puede preguntar y leer la
-	// respuesta (printer.ErrNoAplica si no): ver canalDeImpresora en el runner.
+	// PuedePreguntar dice si a esta impresora se le puede preguntar y leer lo
+	// que contesta —estado, estado repetido y preguntar— (printer.ErrNoAplica
+	// si no): ver canalDeImpresora en el runner.
 	PuedePreguntar() error
 }
 
@@ -132,16 +133,22 @@ func uno(ctx context.Context, p Paso, c Canal) ResultadoPaso {
 		if !dormir(ctx, ms(p.Ms)) {
 			err = errors.New("se cortó: el agente se cerró")
 		}
+	// estado, estado repetido y preguntar leen lo que contesta del otro lado:
+	// los tres pasan por PuedePreguntar (ver canalDeImpresora en el runner).
 	case "estado":
-		err = conDirecto(ctx, c, func(d printer.Directo) error {
-			r.Estado = estado(d)
-			return nil
-		})
+		if err = c.PuedePreguntar(); err == nil {
+			err = conDirecto(ctx, c, func(d printer.Directo) error {
+				r.Estado = estado(d)
+				return nil
+			})
+		}
 	case "estado repetido":
-		err = conDirecto(ctx, c, func(d printer.Directo) error {
-			r.Serie = serie(ctx, d, p.DuranteMs, p.CadaMs)
-			return nil
-		})
+		if err = c.PuedePreguntar(); err == nil {
+			err = conDirecto(ctx, c, func(d printer.Directo) error {
+				r.Serie = serie(ctx, d, p.DuranteMs, p.CadaMs)
+				return nil
+			})
+		}
 	case "preguntar":
 		r.Bytes = len(p.Bytes)
 		if err = c.PuedePreguntar(); err == nil {

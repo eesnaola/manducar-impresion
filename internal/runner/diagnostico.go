@@ -173,7 +173,8 @@ func (c canalDeImpresora) Directo(ctx context.Context) (printer.Directo, error) 
 	return printer.AbrirDirecto(ctx, c.t)
 }
 
-// PuedePreguntar: preguntar devuelve lo que contesta del otro lado. En una
+// PuedePreguntar: estado, estado repetido y preguntar devuelven lo que
+// contesta del otro lado. En una
 // impresora de red, sólo a los puertos de impresora (9100 a 9109): la
 // dirección la manda el servidor, y si no, un servidor tomado podría leer
 // cualquier servicio de la red del local. La del sistema la resuelve la

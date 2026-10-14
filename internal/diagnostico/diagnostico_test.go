@@ -229,3 +229,16 @@ func TestLaRespuestaTieneTope(t *testing.T) {
 		t.Fatalf("respuesta de %d caracteres hexa", len(r[0].Respuesta))
 	}
 }
+
+// estado también lee lo que contesta del otro lado: va por el mismo control
+// que preguntar (en una de red, sólo puertos de impresora).
+func TestEstadoDondeNoSePuedeLeerNoAplica(t *testing.T) {
+	for _, accion := range []string{"estado", "estado repetido"} {
+		c := &canalFalso{errPreguntar: fmt.Errorf("%w: el 80 no es un puerto de impresora", printer.ErrNoAplica)}
+		r := Ejecutar(context.Background(), Documento{Pasos: []Paso{{Accion: accion, DuranteMs: 100, CadaMs: 50}}}, c)
+
+		if r[0].NoAplica != "el 80 no es un puerto de impresora" || c.directo != nil {
+			t.Errorf("%s: resultado %+v (abrió directo: %v)", accion, r[0], c.directo != nil)
+		}
+	}
+}

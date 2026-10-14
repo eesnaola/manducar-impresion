@@ -145,8 +145,9 @@ func valorNumero(k registry.Key, nombre string) (uint64, bool) {
 }
 
 // probeUSB abre el aparato y le hace las preguntas. Apagada o desenchufada
-// —no se deja abrir— o sin aceptar la pregunta —la tapa abierta de la
-// POS-58—, no responde. Si la tiene abierta otro programa que está
+// —no se deja abrir— no responde; abierta pero sin aceptar la pregunta, o
+// sin contestarla cuando antes contestaba —la tapa abierta o el rollo vacío
+// de la POS-58—, tapa abierta o sin papel (ver saludUSB). Si la tiene abierta otro programa que está
 // imprimiendo, está viva: no se la marca caída por estar ocupada.
 func probeUSB(ctx context.Context, rutas []string) Health {
 	if ctx.Err() != nil {
@@ -175,11 +176,18 @@ func probeUSB(ctx context.Context, rutas []string) Health {
 		}
 		return r[len(r)-1], true
 	})
-	if noAcepta {
-		return HealthUnreachable
+	clave := strings.Join(rutas, "|")
+	_, contestabaAntes := contestaron.Load(clave)
+	if !noAcepta && salud != HealthSilent {
+		contestaron.Store(clave, true)
 	}
-	return salud
+	return saludUSB(!noAcepta, salud, contestabaAntes)
 }
+
+// contestaron: los aparatos USB que alguna vez contestaron el estado. Uno que
+// contestaba y deja de contestar está frenado (tapa o papel); uno que nunca
+// contestó es una impresora que no informa estado.
+var contestaron sync.Map
 
 // abrirUSB prueba las rutas en orden. ocupada dice que alguna existe pero la
 // tiene otro (el spooler imprimiendo lo de otro programa).

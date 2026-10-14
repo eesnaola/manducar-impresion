@@ -45,7 +45,22 @@ jobs:
         env:
           MANDUCAR_E2E_PRINTER: ManducarE2E
           MANDUCAR_E2E_ARCHIVO: C:\e2e\salida.prn
-        run: go test -tags windowse2e -run 'TestE2EWindows' -v -timeout 30m ./internal/runner/
+        # La salida queda en un archivo: si algo falla, el paso de abajo copia
+        # los renglones de error como anotaciones, que se leen sin permisos de
+        # administrador (el log entero los pide).
+        run: |
+          go test -tags windowse2e -run 'TestE2EWindows' -v -timeout 30m ./internal/runner/ | Tee-Object -FilePath C:\e2e\go-test.log
+          exit $LASTEXITCODE
+      - name: Lo que falló, como anotaciones
+        if: failure()
+        shell: powershell
+        run: |
+          if (Test-Path C:\e2e\go-test.log) {
+            Get-Content C:\e2e\go-test.log |
+              Where-Object { $_ -match '--- FAIL|_test\.go:\d+:|^panic:|FAIL\s' -and $_ -notmatch 'diagn.stico:' } |
+              Select-Object -First 40 |
+              ForEach-Object { Write-Output ('::error::' + $_.Trim()) }
+          }
       - name: La cola del spooler, si algo falló
         if: failure()
         shell: powershell
