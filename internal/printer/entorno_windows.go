@@ -5,8 +5,7 @@ package printer
 import (
 	"context"
 	"fmt"
-
-	winprinter "github.com/alexbrainman/printer"
+	"strings"
 )
 
 func describirSistema(_ context.Context, nombre string, e *Entorno) {
@@ -19,15 +18,18 @@ func describirSistema(_ context.Context, nombre string, e *Entorno) {
 	e.Cola = fmt.Sprintf("RAW=%s directa=%s bidireccional=%s pausada=%s sin conexión=%s",
 		siNo(info.atributos&printerAttributeRawOnly != 0), siNo(info.atributos&printerAttributeDirect != 0),
 		siNo(info.atributos&printerAttributeEnableBidi != 0), siNo(info.pausada), siNo(info.sinConexion))
-	if p, err := winprinter.Open(nombre); err == nil {
-		if d, err := p.DriverInfo(); err == nil {
-			e.Driver = d.Name
-		}
-		_ = p.Close()
+	e.Driver = info.driver
+	if info.procesador != "" || info.tipoDeDatos != "" {
+		e.Cola += fmt.Sprintf(" procesador=%s tipo=%s", info.procesador, info.tipoDeDatos)
 	}
 	if dir, ok := puertoTCPCrudo(info.puerto); ok {
 		e.Direccion = dir
 		e.Eleccion = "puerto TCP"
+		return
+	}
+	// Los aparatos USB, sólo si la cola está en un puerto USB: en uno de
+	// archivo o de red compartida no hay elección que contar.
+	if !strings.HasPrefix(strings.ToUpper(primerPuerto(info.puerto)), "USB") {
 		return
 	}
 	aparatos := listarAparatosUSB()

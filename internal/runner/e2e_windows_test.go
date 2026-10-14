@@ -1169,8 +1169,10 @@ func TestE2EWindowsDiagnostico(t *testing.T) {
 		rs := srv.resultados(50)
 		return len(rs) > 0 && rs[0].OK
 	})
+	// La impresora de prueba escribe a un archivo y cada documento lo pisa:
+	// queda el último que salió (el de la cola), nunca el directo.
 	b, _ := os.ReadFile(archivo)
-	if !strings.Contains(string(b), "DIAG-NORMAL") || !strings.Contains(string(b), "DIAG-COLA") || strings.Contains(string(b), "DIAG-DIRECTO") {
+	if !strings.Contains(string(b), "DIAG-COLA") || strings.Contains(string(b), "DIAG-DIRECTO") {
 		t.Errorf("el archivo de la impresora tiene:\n%s", b)
 	}
 	cancel()

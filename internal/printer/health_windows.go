@@ -58,6 +58,8 @@ type spoolerInfo struct {
 	pausada     bool
 	sinConexion bool
 	atributos   uint32
+	// Del nivel 2, para el diagnóstico: vacíos si no se pudieron leer.
+	driver, procesador, tipoDeDatos string
 }
 
 const (
@@ -68,6 +70,22 @@ const (
 	printerAttributeEnableBidi = 0x800
 	printerAttributeRawOnly    = 0x1000
 )
+
+// printerInfo2: sólo el principio, que es lo que se lee (el driver, el
+// procesador y el tipo de datos); el resto del struct queda en el buffer.
+type printerInfo2 struct {
+	ServerName     *uint16
+	PrinterName    *uint16
+	ShareName      *uint16
+	PortName       *uint16
+	DriverName     *uint16
+	Comment        *uint16
+	Location       *uint16
+	DevMode        uintptr
+	SepFile        *uint16
+	PrintProcessor *uint16
+	Datatype       *uint16
+}
 
 type printerInfo5 struct {
 	PrinterName              *uint16
@@ -113,6 +131,13 @@ func infoDelSpooler(name string) (spoolerInfo, error) {
 	}
 	out.sinConexion = info5.Attributes&printerAttributeWorkOffline != 0
 	out.atributos = info5.Attributes
+
+	if buf, err := getPrinter(h, 2); err == nil {
+		info2 := (*printerInfo2)(unsafe.Pointer(&buf[0]))
+		out.driver = utf16OVacio(info2.DriverName)
+		out.procesador = utf16OVacio(info2.PrintProcessor)
+		out.tipoDeDatos = utf16OVacio(info2.Datatype)
+	}
 
 	if buf, err = getPrinter(h, 6); err == nil {
 		out.pausada = (*printerInfo6)(unsafe.Pointer(&buf[0])).Status&printerStatusPaused != 0
@@ -166,4 +191,11 @@ func puertoTCPCrudo(portName string) (string, bool) {
 		puerto = 9100
 	}
 	return fmt.Sprintf("%s:%d", host, puerto), true
+}
+
+func utf16OVacio(p *uint16) string {
+	if p == nil {
+		return ""
+	}
+	return windows.UTF16PtrToString(p)
 }
