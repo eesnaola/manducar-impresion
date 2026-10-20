@@ -35,23 +35,23 @@ jobs:
           # pide el código.
           packaging/mac/armar-app.sh dist/manducar-impresion-darwin-arm64 "$V" dist/manducar-impresion-mac.zip
           (cd dist && sha256sum manducar-impresion-* > SHA256SUMS)
-          # El bloque de printing.yaml sale de acá, de los binarios que se
-          # publican, y va en el cuerpo del release: los hashes de una build
-          # local son de otro binario y no sirven para el servidor.
+          # La entrada del catálogo de printing.yaml sale de acá, de los
+          # binarios que se publican, y va en el cuerpo del release: los
+          # hashes de una build local son de otro binario y no sirven para el
+          # servidor.
           {
-            echo "Para que el panel ofrezca esta versión, pegá este bloque en \`config/packages/printing.yaml\` de manducar:"
+            echo "Para que el servidor conozca esta versión, pegá esta entrada arriba de todo en \`printing.agent.releases\` (\`config/packages/printing.yaml\` de manducar) y deployá. Después se pone en prueba o se hace vigente desde plataforma, «Agente de impresión», sin otro push:"
             echo
             echo '```yaml'
-            echo "    printing.agent.version: '$V'"
-            echo "    printing.agent.downloads:"
+            echo "        '$V':"
             for t in $TARGETS; do
               os=${t%-*}; ext=""; [ "$os" = windows ] && ext=".exe"
               f=manducar-impresion-$t$ext
               h=$(grep " $f\$" dist/SHA256SUMS | cut -d' ' -f1)
-              echo "        $t:"
-              echo "            url: '$REPO/releases/download/v$V/$f'"
-              echo "            sha256: '$h'"
-              [ "$os" = darwin ] && echo "            descarga: '$REPO/releases/download/v$V/manducar-impresion-mac.zip'"
+              echo "            $t:"
+              echo "                url: '$REPO/releases/download/v$V/$f'"
+              echo "                sha256: '$h'"
+              [ "$os" = darwin ] && echo "                descarga: '$REPO/releases/download/v$V/manducar-impresion-mac.zip'"
             done
             echo '```'
           } > dist/notas.md

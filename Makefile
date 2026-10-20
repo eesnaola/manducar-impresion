@@ -16,20 +16,20 @@ build:
 	@packaging/mac/armar-app.sh dist/manducar-impresion-darwin-arm64 $(VERSION) dist/manducar-impresion-mac.zip
 	@cd dist && shasum -a 256 manducar-impresion-* > SHA256SUMS
 
-# El bloque para pegar en config/packages/printing.yaml de manducar, con los
-# hashes de ESTA build. Ojo: para publicar de verdad va el bloque que arma el
-# release de GitHub, que son los binarios que la gente se baja.
+# La entrada para el catálogo `printing.agent.releases` de
+# config/packages/printing.yaml de manducar, con los hashes de ESTA build.
+# Ojo: para publicar de verdad va la entrada que arma el release de GitHub,
+# que son los binarios que la gente se baja.
 release-notes:
 	@echo "# Ojo: estos son los hashes de tu build local. Para publicar, usá" >&2
-	@echo "# el bloque que aparece en el cuerpo del release de GitHub." >&2
-	@echo "    printing.agent.version: '$(VERSION)'"
-	@echo "    printing.agent.downloads:"
+	@echo "# la entrada que aparece en el cuerpo del release de GitHub." >&2
+	@echo "        '$(VERSION)':"
 	@for t in $(TARGETS); do \
 	  os=$${t%-*}; ext=""; [ "$$os" = windows ] && ext=".exe"; \
 	  f=manducar-impresion-$$t$$ext; h=$$(grep " $$f$$" dist/SHA256SUMS | cut -d' ' -f1); \
-	  echo "        $$t:"; \
-	  echo "            url: '$(REPO)/releases/download/v$(VERSION)/$$f'"; \
-	  echo "            sha256: '$$h'"; \
+	  echo "            $$t:"; \
+	  echo "                url: '$(REPO)/releases/download/v$(VERSION)/$$f'"; \
+	  echo "                sha256: '$$h'"; \
 	done
 
 clean:
