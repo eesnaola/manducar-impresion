@@ -24,6 +24,21 @@ jobs:
       - name: La consola de verdad (doble clic vs. terminal)
         run: go test -run 'TestConsola' -v .
 
+  # La memoria que el vigía anota con cada caída: sólo se mide en Windows, y en
+  # ubuntu se compila pero no se prueba. Lo que importa ver es que el pico de un
+  # hijo se lee después de que terminó.
+  memoria:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.23.x', check-latest: false }
+      # En pasos separados: pwsh sólo mira el código del último comando.
+      - name: La memoria que mide el vigía
+        run: go test -v ./internal/memoria/
+      - name: El vigía la mide cuando termina el hijo
+        run: go test -v -run 'TestProcesoMideLaMemoriaCuandoTerminaElHijo' ./internal/vigia/
+
   spooler:
     runs-on: windows-latest
     steps:

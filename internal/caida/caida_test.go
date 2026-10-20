@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/eesnaola/manducar-impresion/internal/api"
+	"github.com/eesnaola/manducar-impresion/internal/memoria"
 	"github.com/eesnaola/manducar-impresion/internal/vigia"
 )
 
@@ -39,7 +40,7 @@ func agregar(t *testing.T, dir, nombre, contenido string) {
 func anotarCaida(t *testing.T, dir, titulo, pila string, codigo int, cuando time.Time) {
 	t.Helper()
 	agregar(t, dir, Archivo, "panic: "+titulo+"\n\ngoroutine 1 [running]:\n"+pila+"()\n")
-	if err := AnotarSalida(dir, codigo, cuando); err != nil {
+	if err := AnotarSalida(dir, codigo, cuando, memoria.Medida{}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -89,7 +90,7 @@ func TestTextoSueltoNoEsUnaCaida(t *testing.T) {
 func TestTextoSueltoConLaMarcaDelVigiaEsUnaCaida(t *testing.T) {
 	dir := t.TempDir()
 	escribir(t, dir, Archivo, "config: no hay token\n")
-	if err := AnotarSalida(dir, 1, time.Date(2026, 10, 13, 10, 0, 0, 0, time.UTC)); err != nil {
+	if err := AnotarSalida(dir, 1, time.Date(2026, 10, 13, 10, 0, 0, 0, time.UTC), memoria.Medida{}); err != nil {
 		t.Fatal(err)
 	}
 	inf := informe(t, dir)
@@ -102,7 +103,7 @@ func TestElResumenEsLaLineaDelPanicYElCodigoLoAnotoElVigia(t *testing.T) {
 	dir := t.TempDir()
 	escribir(t, dir, Archivo, "panic: runtime error: index out of range [3] with length 3\n\ngoroutine 7 [running]:\nmain.algo()\n")
 	cuando := time.Date(2026, 10, 12, 23, 32, 0, 0, time.UTC)
-	if err := AnotarSalida(dir, 2, cuando); err != nil {
+	if err := AnotarSalida(dir, 2, cuando, memoria.Medida{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -126,7 +127,7 @@ func TestElResumenEsLaLineaDelPanicYElCodigoLoAnotoElVigia(t *testing.T) {
 
 func TestSinPanicElResumenEsLaSalidaQueVioElVigia(t *testing.T) {
 	dir := t.TempDir()
-	if err := AnotarSalida(dir, 1, time.Date(2026, 10, 12, 23, 32, 0, 0, time.UTC)); err != nil {
+	if err := AnotarSalida(dir, 1, time.Date(2026, 10, 12, 23, 32, 0, 0, time.UTC), memoria.Medida{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -181,6 +182,115 @@ func TestTresCaidasSinInformarSeCuentaSoloLaUltima(t *testing.T) {
 	}
 	if strings.Contains(inf.Detalle, "pilaDeA") || strings.Contains(inf.Detalle, "pilaDeB") {
 		t.Errorf("el detalle arrastra caídas anteriores: %q", inf.Detalle)
+	}
+}
+
+// El detalle es de la última, pero el informe dice cuántas se juntaron: en
+// ELCARACOL (15/10) un agente que se caía antes de llegar a contarlas dejó
+// unas seis y en la ficha aparecieron tres.
+func TestElInformeDiceCuantasCaidasSeJuntaron(t *testing.T) {
+	dir := t.TempDir()
+	anotarCaida(t, dir, "caída A", "main.pilaDeA", 2, time.Date(2026, 10, 12, 21, 0, 0, 0, time.UTC))
+	if inf := informe(t, dir); inf.Caidas != 1 {
+		t.Errorf("con una, Caidas = %d", inf.Caidas)
+	}
+	anotarCaida(t, dir, "caída B", "main.pilaDeB", 2, time.Date(2026, 10, 12, 22, 0, 0, 0, time.UTC))
+	anotarCaida(t, dir, "caída C", "main.pilaDeC", 2, time.Date(2026, 10, 12, 23, 0, 0, 0, time.UTC))
+	if inf := informe(t, dir); inf.Caidas != 3 {
+		t.Errorf("con tres, Caidas = %d", inf.Caidas)
+	}
+}
+
+// El detalle sale de los últimos 64 KB, pero la cuenta mira el archivo entero:
+// un volcado largo no esconde las caídas que quedaron antes.
+func TestLasCaidasSeCuentanAunqueQuedenLejosDelFinal(t *testing.T) {
+	dir := t.TempDir()
+	anotarCaida(t, dir, "caída A", "main.pilaDeA", 2, time.Date(2026, 10, 12, 21, 0, 0, 0, time.UTC))
+	anotarCaida(t, dir, "caída B", strings.Repeat("relleno de la pila\n", 10<<10)+"main.pilaDeB", 2, time.Date(2026, 10, 12, 22, 0, 0, 0, time.UTC))
+	anotarCaida(t, dir, "caída C", "main.pilaDeC", 2, time.Date(2026, 10, 12, 23, 0, 0, 0, time.UTC))
+
+	if inf := informe(t, dir); inf.Caidas != 3 {
+		t.Errorf("Caidas = %d, quiero 3", inf.Caidas)
+	}
+}
+
+// Sin vigía no hay marcas: cada encabezado en la columna 0 es una caída, y
+// los panics anidados (con tabulación) son parte de la misma.
+func TestSinVigiaSeCuentanLosEncabezados(t *testing.T) {
+	dir := t.TempDir()
+	escribir(t, dir, Archivo, ""+
+		"panic: primero\n\ngoroutine 1 [running]:\nmain.pilaDelPrimero()\n"+
+		"panic: segundo [recovered]\n\tpanic: anidado\n\ngoroutine 1 [running]:\nmain.pilaDelSegundo()\n")
+
+	if inf := informe(t, dir); inf.Caidas != 2 {
+		t.Errorf("Caidas = %d, quiero 2", inf.Caidas)
+	}
+}
+
+// Lo que midió el vigía cuando el hijo terminó viaja con la caída: dice si se
+// quedó sin memoria la computadora o el agente. El caso es el de ELCARACOL.
+func TestLaMemoriaQueMidioElVigiaVaEnElInforme(t *testing.T) {
+	dir := t.TempDir()
+	agregar(t, dir, Archivo, "runtime: VirtualAlloc of 32768 bytes failed with errno=1455\nfatal error: out of memory\n")
+	m := memoria.Medida{ComprometidaMB: 16030, LimiteMB: 16050, RAMMB: 8072, RAMLibreMB: 210, AgenteMB: 14}
+	if err := AnotarSalida(dir, 2, time.Date(2026, 10, 15, 19, 59, 40, 0, time.UTC), m); err != nil {
+		t.Fatal(err)
+	}
+
+	inf := informe(t, dir)
+	quiero := api.Memoria{ComprometidaMB: 16030, LimiteMB: 16050, RAMMB: 8072, RAMLibreMB: 210, AgenteMB: 14}
+	if inf.Memoria == nil || *inf.Memoria != quiero {
+		t.Errorf("Memoria = %+v, quiero %+v", inf.Memoria, quiero)
+	}
+	if inf.Resumen != "fatal error: out of memory" || inf.Codigo == nil || *inf.Codigo != 2 {
+		t.Errorf("Resumen/Codigo = %q/%v", inf.Resumen, inf.Codigo)
+	}
+	// El detalle va a los logs de prod: la medida también tiene que estar ahí.
+	if !strings.Contains(inf.Detalle, "comprometida=16030MB") {
+		t.Errorf("el detalle no trae la memoria: %q", inf.Detalle)
+	}
+}
+
+func TestSinMedidaNoHayMemoria(t *testing.T) {
+	dir := t.TempDir()
+	anotarCaida(t, dir, "caída A", "main.pilaDeA", 2, time.Date(2026, 10, 12, 21, 0, 0, 0, time.UTC))
+
+	inf := informe(t, dir)
+	if inf.Memoria != nil {
+		t.Errorf("Memoria = %+v, quiero nil", inf.Memoria)
+	}
+	if strings.Contains(inf.Detalle, "memoria") {
+		t.Errorf("sin medida no se anota la línea: %q", inf.Detalle)
+	}
+}
+
+func TestLaMemoriaEsLaDeLaUltimaCaida(t *testing.T) {
+	dir := t.TempDir()
+	agregar(t, dir, Archivo, "fatal error: out of memory\n")
+	if err := AnotarSalida(dir, 2, time.Date(2026, 10, 15, 19, 59, 40, 0, time.UTC), memoria.Medida{ComprometidaMB: 100, LimiteMB: 200, AgenteMB: 90}); err != nil {
+		t.Fatal(err)
+	}
+	agregar(t, dir, Archivo, "fatal error: runtime: cannot allocate memory\n")
+	if err := AnotarSalida(dir, 2, time.Date(2026, 10, 15, 20, 1, 52, 0, time.UTC), memoria.Medida{ComprometidaMB: 199, LimiteMB: 200, AgenteMB: 3}); err != nil {
+		t.Fatal(err)
+	}
+
+	inf := informe(t, dir)
+	if inf.Memoria == nil || *inf.Memoria != (api.Memoria{ComprometidaMB: 199, LimiteMB: 200, AgenteMB: 3}) {
+		t.Errorf("Memoria = %+v", inf.Memoria)
+	}
+}
+
+// Sin nada en la salida de error, el resumen sigue siendo la salida que vio el
+// vigía, no la línea de la memoria.
+func TestLaMemoriaNoEsElResumen(t *testing.T) {
+	dir := t.TempDir()
+	if err := AnotarSalida(dir, 1, time.Date(2026, 10, 12, 23, 32, 0, 0, time.UTC), memoria.Medida{ComprometidaMB: 100, LimiteMB: 200}); err != nil {
+		t.Fatal(err)
+	}
+
+	if inf := informe(t, dir); inf.Resumen != "el agente terminó con código 1" {
+		t.Fatalf("Resumen = %q", inf.Resumen)
 	}
 }
 
@@ -249,7 +359,7 @@ func pilaDelRuntime() string {
 func TestUnErrorFatalDeVerdadSeResumeConSuEncabezado(t *testing.T) {
 	dir := t.TempDir()
 	escribir(t, dir, Archivo, "fatal error: stack overflow\n\n"+pilaDelRuntime())
-	if err := AnotarSalida(dir, 2, time.Date(2026, 10, 12, 23, 32, 0, 0, time.UTC)); err != nil {
+	if err := AnotarSalida(dir, 2, time.Date(2026, 10, 12, 23, 32, 0, 0, time.UTC), memoria.Medida{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -281,7 +391,7 @@ func TestSinEncabezadoElResumenSaltaLoQueNoDiceNada(t *testing.T) {
 		t.Run(nombre, func(t *testing.T) {
 			dir := t.TempDir()
 			escribir(t, dir, Archivo, c.texto)
-			if err := AnotarSalida(dir, 2, time.Date(2026, 10, 12, 23, 32, 0, 0, time.UTC)); err != nil {
+			if err := AnotarSalida(dir, 2, time.Date(2026, 10, 12, 23, 32, 0, 0, time.UTC), memoria.Medida{}); err != nil {
 				t.Fatal(err)
 			}
 			if inf := informe(t, dir); inf.Resumen != c.quiero {
@@ -295,7 +405,7 @@ func TestSinEncabezadoElResumenSaltaLoQueNoDiceNada(t *testing.T) {
 func TestLeerSoloMiraLosUltimos64KB(t *testing.T) {
 	dir := t.TempDir()
 	escribir(t, dir, Archivo, "panic: lejano\n"+strings.Repeat("relleno de la pila\n", 10<<10))
-	if err := AnotarSalida(dir, 3, time.Date(2026, 10, 12, 23, 0, 0, 0, time.UTC)); err != nil {
+	if err := AnotarSalida(dir, 3, time.Date(2026, 10, 12, 23, 0, 0, 0, time.UTC), memoria.Medida{}); err != nil {
 		t.Fatal(err)
 	}
 

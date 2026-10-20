@@ -20,6 +20,7 @@ import (
 	"github.com/eesnaola/manducar-impresion/internal/api"
 	"github.com/eesnaola/manducar-impresion/internal/caida"
 	"github.com/eesnaola/manducar-impresion/internal/config"
+	"github.com/eesnaola/manducar-impresion/internal/memoria"
 	"github.com/eesnaola/manducar-impresion/internal/printer"
 	"github.com/eesnaola/manducar-impresion/internal/runner"
 	"github.com/eesnaola/manducar-impresion/internal/svc"
@@ -386,12 +387,16 @@ func cmdVigilar() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	log.Printf("vigía %s: arranco el agente", Version)
+	// La memoria se mide cuando el hijo termina y se anota recién después de
+	// la espera, con la salida (ver vigia.Vigilar): entre una cosa y la otra
+	// no se lanza ningún hijo, así que la medida es la de esa salida.
+	var medida memoria.Medida
 	anotar := func(codigo int, cuando time.Time) {
-		if err := caida.AnotarSalida(dir, codigo, cuando); err != nil {
+		if err := caida.AnotarSalida(dir, codigo, cuando, medida); err != nil {
 			log.Println("vigía: no se pudo anotar la caída:", err)
 		}
 	}
-	lanzar := vigia.Proceso(exe, []string{"correr", "--log-archivo"}, filepath.Join(dir, caida.Archivo))
+	lanzar := vigia.Proceso(exe, []string{"correr", "--log-archivo"}, filepath.Join(dir, caida.Archivo), func(m memoria.Medida) { medida = m })
 	if err := vigia.Vigilar(ctx, lanzar, anotar, vigia.Dormir); err != nil {
 		log.Println("vigía:", err)
 		return 1

@@ -4,13 +4,14 @@
 // Todo pasa por impresion.crash, al lado de impresion.log. Con vigía (la
 // instalación de usuario de Windows), la salida de error del agente va entera
 // ahí —la abre el vigía— y el vigía agrega con qué código terminó el proceso
-// (AnotarSalida). Sin vigía (Mac, Linux, el servicio), Go copia ahí el panic o
+// y cómo estaba la memoria en ese momento (AnotarSalida). Sin vigía (Mac, Linux, el servicio), Go copia ahí el panic o
 // el error fatal (Preparar). El agente que arranca después lo lee (Leer), lo
 // manda, y lo vacía (Vaciar).
 //
 // Si una caída no llegó a contarse (sin red, o un agente que se cae en bucle)
-// la siguiente se anota atrás de ella. Leer informa sólo la última, mira
-// nada más el final del archivo, y Preparar lo achica si creció demasiado.
+// la siguiente se anota atrás de ella. Leer informa el detalle de la última
+// (mira nada más el final del archivo) y cuántas había; Preparar lo achica si
+// creció demasiado.
 package caida
 
 import (
@@ -28,6 +29,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/eesnaola/manducar-impresion/internal/api"
+	"github.com/eesnaola/manducar-impresion/internal/memoria"
 	"github.com/eesnaola/manducar-impresion/internal/vigia"
 )
 
@@ -35,12 +37,13 @@ import (
 const Archivo = "impresion.crash"
 
 const (
-	archivoLog  = "impresion.log"
-	marcaSalida = "=== el agente terminó con código "
-	resumenMax  = 300
-	detalleMax  = 16 << 10
-	logMax      = 32 << 10
-	lineasDeLog = 200
+	archivoLog   = "impresion.log"
+	marcaSalida  = "=== el agente terminó con código "
+	marcaMemoria = "=== memoria al terminar:"
+	resumenMax   = 300
+	detalleMax   = 16 << 10
+	logMax       = 32 << 10
+	lineasDeLog  = 200
 
 	// De impresion.crash se lee, y se conserva al compactar, sólo el final.
 	colaMax        = 64 << 10
@@ -53,7 +56,9 @@ const (
 var ErrNoEsCaida = errors.New("en impresion.crash hay texto que no es una caída")
 
 var (
-	reSalida = regexp.MustCompile(`=== el agente terminó con código (-?\d+) (\S+)`)
+	reSalida  = regexp.MustCompile(`=== el agente terminó con código (-?\d+) (\S+)`)
+	reMemoria = regexp.MustCompile(`(?m)^=== memoria al terminar:.*$`)
+	reMedida  = regexp.MustCompile(`(\w+)=(\d+)MB`)
 	// Los panics anidados de un mismo volcado van con tabulación: lo que está
 	// en la columna 0 es el encabezado de una caída.
 	reCabecera = regexp.MustCompile(`(?m)^(?:panic:|fatal error:)`)
@@ -94,15 +99,60 @@ func Preparar(dir string) error {
 	return debug.SetCrashOutput(f, debug.CrashOptions{})
 }
 
-// AnotarSalida la usa el vigía cuando el hijo terminó mal.
-func AnotarSalida(dir string, codigo int, cuando time.Time) error {
+// AnotarSalida la usa el vigía cuando el hijo terminó mal: la memoria que
+// midió cuando terminó, si midió algo, y atrás la marca con el código. Las dos
+// van juntas, después de lo que el hijo dejó en la salida de error.
+func AnotarSalida(dir string, codigo int, cuando time.Time, m memoria.Medida) error {
 	f, err := os.OpenFile(filepath.Join(dir, Archivo), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	_, err = fmt.Fprintf(f, "%s%d %s\n", marcaSalida, codigo, cuando.UTC().Format(time.RFC3339))
+	var b strings.Builder
+	if !m.Vacia() {
+		b.WriteString(marcaMemoria)
+		for _, c := range []struct {
+			clave string
+			mb    uint64
+		}{{"comprometida", m.ComprometidaMB}, {"limite", m.LimiteMB}, {"ram", m.RAMMB}, {"ram_libre", m.RAMLibreMB}, {"agente", m.AgenteMB}} {
+			if c.mb > 0 {
+				fmt.Fprintf(&b, " %s=%dMB", c.clave, c.mb)
+			}
+		}
+		b.WriteByte('\n')
+	}
+	fmt.Fprintf(&b, "%s%d %s\n", marcaSalida, codigo, cuando.UTC().Format(time.RFC3339))
+	_, err = f.WriteString(b.String())
 	return err
+}
+
+// memoriaDe lee la última línea de memoria del texto de una caída; nil si no
+// hay ninguna.
+func memoriaDe(texto string) *api.Memoria {
+	lineas := reMemoria.FindAllString(texto, -1)
+	if len(lineas) == 0 {
+		return nil
+	}
+	var m api.Memoria
+	for _, kv := range reMedida.FindAllStringSubmatch(lineas[len(lineas)-1], -1) {
+		n, err := strconv.ParseUint(kv[2], 10, 64)
+		if err != nil {
+			continue
+		}
+		switch kv[1] {
+		case "comprometida":
+			m.ComprometidaMB = n
+		case "limite":
+			m.LimiteMB = n
+		case "ram":
+			m.RAMMB = n
+		case "ram_libre":
+			m.RAMLibreMB = n
+		case "agente":
+			m.AgenteMB = n
+		}
+	}
+	return &m
 }
 
 // Leer arma el informe de la última caída anotada; nil si no hay ninguna, y
@@ -149,7 +199,24 @@ func Leer(dir, version string) (*api.CrashReport, error) {
 		// cayó, y atrás las demás.
 		Detalle: principio(texto, detalleMax),
 		Log:     colaDelLog(dir),
+		Caidas:  contarCaidas(p),
+		Memoria: memoriaDe(texto),
 	}, nil
+}
+
+// contarCaidas cuenta las caídas anotadas en el archivo entero, no sólo en el
+// final que se lee para el detalle: cada marca del vigía es una, y sin vigía,
+// cada encabezado en la columna 0. Nunca menos de una, que es la que se cuenta.
+func contarCaidas(p string) int {
+	todo, err := colaDeArchivo(p, compactarSobre)
+	if err != nil {
+		return 1
+	}
+	n := len(reSalida.FindAllIndex(todo, -1))
+	if n == 0 {
+		n = len(reCabecera.FindAllIndex(todo, -1))
+	}
+	return max(n, 1)
 }
 
 // Vaciar deja el archivo en cero. No se lo borra: el proceso que corre lo
@@ -243,8 +310,9 @@ func ultimaCaida(texto string) string {
 // resumen: la primera línea que dice qué pasó («panic: …», «fatal error: …»,
 // o «Exception 0xc0000005 …», el encabezado de una excepción de Windows). Si no
 // hay ninguna, el primer renglón que diga algo: no «runtime stack:», ni el que
-// abre el volcado de una goroutine, ni el «[signal …]». Si Go no dejó nada, la
-// salida que anotó el vigía, sin la fecha (ésa va en Ocurrio).
+// abre el volcado de una goroutine, ni el «[signal …]», ni la memoria que
+// anotó el vigía. Si Go no dejó nada, la salida que anotó el vigía, sin la
+// fecha (ésa va en Ocurrio).
 func resumen(texto string) string {
 	var salida, primera string
 	for _, l := range strings.Split(texto, "\n") {
@@ -257,7 +325,7 @@ func resumen(texto string) string {
 			if m := reSalida.FindStringSubmatch(l); m != nil && salida == "" {
 				salida = strings.TrimPrefix(marcaSalida, "=== ") + m[1]
 			}
-		case l == "runtime stack:", strings.HasPrefix(l, "[signal "), reGoroutine.MatchString(l):
+		case l == "runtime stack:", strings.HasPrefix(l, "[signal "), strings.HasPrefix(l, marcaMemoria), reGoroutine.MatchString(l):
 		case primera == "":
 			primera = l
 		}

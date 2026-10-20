@@ -9,9 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/eesnaola/manducar-impresion/internal/memoria"
 )
 
 func TestEspera(t *testing.T) {
@@ -166,7 +169,7 @@ func TestProcesoDevuelveElCodigoYMarcaAlHijoComoVigilado(t *testing.T) {
 		}
 		os.Exit(CodigoActualizado)
 	}
-	lanzar := Proceso(os.Args[0], []string{"-test.run=TestProcesoDevuelveElCodigoYMarcaAlHijoComoVigilado"}, filepath.Join(t.TempDir(), "impresion.crash"))
+	lanzar := Proceso(os.Args[0], []string{"-test.run=TestProcesoDevuelveElCodigoYMarcaAlHijoComoVigilado"}, filepath.Join(t.TempDir(), "impresion.crash"), nil)
 	t.Setenv("VIGIA_HIJO", "1")
 
 	codigo, err := lanzar(context.Background())
@@ -195,7 +198,7 @@ func TestProcesoMandaLaSalidaDeErrorDelHijoAlArchivoDeCaidas(t *testing.T) {
 	defer log.SetOutput(antes)
 	t.Setenv("VIGIA_HIJO_SALIDAS", "1")
 
-	codigo, err := Proceso(os.Args[0], []string{"-test.run=^TestProcesoMandaLaSalidaDeErrorDelHijoAlArchivoDeCaidas$"}, caidas)(context.Background())
+	codigo, err := Proceso(os.Args[0], []string{"-test.run=^TestProcesoMandaLaSalidaDeErrorDelHijoAlArchivoDeCaidas$"}, caidas, nil)(context.Background())
 
 	if err != nil || codigo != 2 {
 		t.Fatalf("codigo %d, err %v", codigo, err)
@@ -212,8 +215,30 @@ func TestProcesoMandaLaSalidaDeErrorDelHijoAlArchivoDeCaidas(t *testing.T) {
 	}
 }
 
+// Cuando el hijo termina, el vigía mide la memoria y se la pasa a quien la va a
+// anotar, una vez por vuelta. Fuera de Windows la medida llega vacía; en
+// Windows, con la computadora y lo que llegó a usar el hijo.
+func TestProcesoMideLaMemoriaCuandoTerminaElHijo(t *testing.T) {
+	if os.Getenv("VIGIA_HIJO_MEDIDO") == "1" {
+		os.Exit(2)
+	}
+	t.Setenv("VIGIA_HIJO_MEDIDO", "1")
+	var medidas []memoria.Medida
+	lanzar := Proceso(os.Args[0], []string{"-test.run=^TestProcesoMideLaMemoriaCuandoTerminaElHijo$"}, filepath.Join(t.TempDir(), "impresion.crash"),
+		func(m memoria.Medida) { medidas = append(medidas, m) })
+
+	codigo, err := lanzar(context.Background())
+
+	if err != nil || codigo != 2 || len(medidas) != 1 {
+		t.Fatalf("codigo %d, err %v, medidas %d", codigo, err, len(medidas))
+	}
+	if runtime.GOOS == "windows" && (medidas[0].LimiteMB == 0 || medidas[0].AgenteMB == 0) {
+		t.Errorf("medida = %+v", medidas[0])
+	}
+}
+
 func TestProcesoSinBinarioEsUnError(t *testing.T) {
-	if _, err := Proceso("/no/existe/agente", nil, filepath.Join(t.TempDir(), "impresion.crash"))(context.Background()); err == nil {
+	if _, err := Proceso("/no/existe/agente", nil, filepath.Join(t.TempDir(), "impresion.crash"), nil)(context.Background()); err == nil {
 		t.Fatal("tenía que fallar: el vigía lo deja en el log, sin anotarlo como caída, y reintenta")
 	}
 }

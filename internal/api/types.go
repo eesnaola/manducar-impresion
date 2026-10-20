@@ -98,4 +98,20 @@ type CrashReport struct {
 	Resumen string `json:"resumen"`
 	Detalle string `json:"detalle"`
 	Log     string `json:"log"`
+	// Cuántas caídas junta el informe: la última, la del detalle, y las que se
+	// anotaron antes sin que un agente llegara a contarlas.
+	Caidas int `json:"caidas"`
+	// Cómo estaba la memoria cuando terminó; nil si el vigía no la midió (sin
+	// vigía, o un vigía de antes de que midiera).
+	Memoria *Memoria `json:"memoria,omitempty"`
+}
+
+// Memoria es la medida que tomó el vigía al terminar el agente, en MB. Lo que
+// no se pudo medir va en cero y no viaja.
+type Memoria struct {
+	ComprometidaMB uint64 `json:"comprometida_mb,omitempty"`
+	LimiteMB       uint64 `json:"limite_mb,omitempty"`
+	RAMMB          uint64 `json:"ram_mb,omitempty"`
+	RAMLibreMB     uint64 `json:"ram_libre_mb,omitempty"`
+	AgenteMB       uint64 `json:"agente_mb,omitempty"`
 }

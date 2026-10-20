@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"time"
+
+	"github.com/eesnaola/manducar-impresion/internal/memoria"
 )
 
 // CodigoActualizado: el hijo se actualizó y hay que arrancar el binario nuevo,
@@ -132,7 +134,12 @@ func Dormir(ctx context.Context, d time.Duration) bool {
 // motivo de una caída, y todo: también lo que escribe antes de darse por
 // caído, como el «fatal error: …» de un error fatal o el encabezado de una
 // excepción de Windows, que SetCrashOutput no copia.
-func Proceso(exe string, args []string, caidas string) Lanzador {
+//
+// Cuando el hijo termina, mide la memoria —la de la computadora en ese momento
+// y lo más que llegó a usar el hijo— y se la pasa a alTerminar, que la guarda
+// para anotarla con la caída: medida después de la espera ya no diría cómo
+// estaba la computadora cuando se cayó.
+func Proceso(exe string, args []string, caidas string, alTerminar func(memoria.Medida)) Lanzador {
 	return func(ctx context.Context) (int, error) {
 		c := exec.CommandContext(ctx, exe, args...)
 		c.Env = append(os.Environ(), EnvVigilado+"=1")
@@ -151,7 +158,11 @@ func Proceso(exe string, args []string, caidas string) Lanzador {
 		if err := c.Start(); err != nil {
 			return 0, err
 		}
+		seguimiento := memoria.Seguir(c.Process.Pid)
 		err := c.Wait()
+		if m := seguimiento.Medir(); alTerminar != nil {
+			alTerminar(m)
+		}
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
 			return ee.ExitCode(), nil
