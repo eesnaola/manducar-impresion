@@ -5,13 +5,16 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
+func fijo(jwt string) func() string { return func() string { return jwt } }
+
 func TestListenCallsOnWakePerEventAndSendsBearer(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer jwt" || r.URL.Query().Get("topic") != "printing/agent/7" {
+		if r.Header.Get("Authorization") != "Bearer jwt" || r.URL.Query().Get("match") != "printing/agent/7" || r.URL.Query().Has("topic") {
 			w.WriteHeader(403)
 			return
 		}
@@ -31,7 +34,7 @@ func TestListenCallsOnWakePerEventAndSendsBearer(t *testing.T) {
 	defer cancel()
 	wakes := make(chan struct{}, 10)
 	states := make(chan bool, 10)
-	go Listen(ctx, srv.URL, "printing/agent/7", "jwt", func() { wakes <- struct{}{} }, func(c bool) { states <- c })
+	go Listen(ctx, srv.URL, "printing/agent/7", fijo("jwt"), func() { wakes <- struct{}{} }, func(c bool) { states <- c }, func() {})
 
 	if got := <-states; !got {
 		t.Fatal("primero conecta")
@@ -69,7 +72,7 @@ func TestBackoffResetsAfterAGoodConnection(t *testing.T) {
 	wakes := make(chan struct{}, 100)
 	states := make(chan bool, 100)
 	start := time.Now()
-	go Listen(ctx, srv.URL, "t", "jwt", func() { wakes <- struct{}{} }, func(c bool) { states <- c })
+	go Listen(ctx, srv.URL, "t", fijo("jwt"), func() { wakes <- struct{}{} }, func(c bool) { states <- c }, func() {})
 
 	for i := 0; i < 7; i++ {
 		select {
@@ -105,7 +108,7 @@ func TestReconnectsWhenTheHubGoesQuiet(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	go Listen(ctx, srv.URL, "t", "jwt", func() {}, func(bool) {})
+	go Listen(ctx, srv.URL, "t", fijo("jwt"), func() {}, func(bool) {}, func() {})
 
 	for i := 0; i < 3; i++ {
 		select {
@@ -113,5 +116,83 @@ func TestReconnectsWhenTheHubGoesQuiet(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatalf("hubo %d conexiones: al hub mudo no se lo está cortando", i)
 		}
+	}
+}
+
+// El hub rechaza el token vencido (401) o uno que no cubre el tema (403):
+// Listen avisa, y el próximo intento sale con el token que haya ENTONCES, no
+// con el del arranque.
+func TestARejectedTokenIsReportedAndTheNextAttemptUsesTheFreshOne(t *testing.T) {
+	for _, code := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(http.StatusText(code), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer nuevo" {
+					w.WriteHeader(code)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.(http.Flusher).Flush()
+				<-r.Context().Done()
+			}))
+			defer srv.Close()
+
+			var token atomic.Value
+			token.Store("vencido")
+			rejected := make(chan struct{}, 10)
+			states := make(chan bool, 10)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			go Listen(ctx, srv.URL, "t", func() string { return token.Load().(string) }, func() {},
+				func(c bool) { states <- c },
+				func() {
+					// El que llama consigue uno nuevo (en el agente, el latido).
+					token.Store("nuevo")
+					rejected <- struct{}{}
+				})
+
+			select {
+			case <-rejected:
+			case <-time.After(2 * time.Second):
+				t.Fatal("el rechazo del hub no se avisó")
+			}
+			select {
+			case up := <-states:
+				if !up {
+					t.Fatal("con el token nuevo tenía que conectar")
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("el reintento no salió con el token nuevo")
+			}
+		})
+	}
+}
+
+// Un hub que contesta otra cosa (502 de Render) no es un problema del token:
+// no se pide uno nuevo.
+func TestOtherErrorsAreNotARejection(t *testing.T) {
+	calls := make(chan struct{}, 10)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case calls <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	var rejected atomic.Int32
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	go Listen(ctx, srv.URL, "t", fijo("jwt"), func() {}, func(bool) {}, func() { rejected.Add(1) })
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-calls:
+		case <-time.After(2 * time.Second):
+			t.Fatal("no reintentó")
+		}
+	}
+	if n := rejected.Load(); n != 0 {
+		t.Fatalf("un 502 no es un token rechazado, y se avisó %d veces", n)
 	}
 }

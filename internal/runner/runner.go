@@ -39,7 +39,7 @@ var (
 	printersEvery     = 5 * time.Minute       // cada cuánto se manda la lista de impresoras del sistema
 	listTimeout       = 10 * time.Second      // lo que se le aguanta al sistema para listar impresoras
 	rewakeDelay       = time.Second           // reintento tras un despertar que no encontró nada
-	jwtCheckEvery     = time.Minute           // cada cuánto se mira si el latido renovó el JWT del hub
+	jwtCheckEvery     = time.Minute           // cada cuánto se mira si el latido cambió la URL o el tema del hub
 	updateWait        = 5 * time.Second       // cuánto espera la actualización a que no quede nada en curso
 	shutdownWait      = 3 * time.Second       // cuánto se le da a lo que se está imprimiendo al salir
 	flushWait         = 5 * time.Second       // plazo del último vaciado del outbox al salir
@@ -82,6 +82,10 @@ type runner struct {
 	flushKick chan struct{}
 	flushStop chan struct{}
 	flushDone chan struct{}
+
+	// beatKick pide un latido ya, sin esperar los 30 s: el hub rechazó el JWT
+	// y el que trae el latido es el único que sirve.
+	beatKick chan struct{}
 
 	sseUp         atomic.Bool
 	hubMu         sync.Mutex
@@ -147,6 +151,11 @@ type runner struct {
 }
 
 func newRunner(cfg config.Config, out *outbox.Outbox, version string) *runner {
+	// El JWT del hub que quedó en el disco es el de cuando se vinculó: el de
+	// Mercure v1 vence en una hora, y uno viejo puede no valer más (27/10, El
+	// Caracol: al arrancar, el hub le contestó 401 con ése). Se espera el del
+	// primer latido, que sale enseguida; mientras tanto corre el poll.
+	cfg.Mercure.JWT = ""
 	r := &runner{
 		cfg:      cfg,
 		out:      out,
@@ -161,6 +170,7 @@ func newRunner(cfg config.Config, out *outbox.Outbox, version string) *runner {
 		flushKick: make(chan struct{}, 1),
 		flushStop: make(chan struct{}),
 		flushDone: make(chan struct{}),
+		beatKick:  make(chan struct{}, 1),
 		printers:  map[string]*queue{},
 		beatErr:   newThrottle(logRepeatEvery),
 		fetchErr:  newThrottle(logRepeatEvery),
@@ -314,9 +324,32 @@ func (r *runner) heartbeatLoop(ctx context.Context) {
 			}
 			r.maybeUpdate(ctx)
 		}
-		if !sleep(ctx, every) {
+		if !r.sleepBeat(ctx, every) {
 			return
 		}
+	}
+}
+
+// sleepBeat espera el próximo latido, o menos si alguien lo pidió con
+// kickBeat. Dice si hay que seguir.
+func (r *runner) sleepBeat(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+	case <-r.beatKick:
+	}
+	return true
+}
+
+// kickBeat pide un latido ya. Como el canal tiene lugar para uno, los pedidos
+// que llegan mientras tanto se funden en ése.
+func (r *runner) kickBeat() {
+	select {
+	case r.beatKick <- struct{}{}:
+	default:
 	}
 }
 
@@ -386,25 +419,25 @@ func (r *runner) sseLoop(ctx context.Context) {
 			continue
 		}
 		sub, cancel := context.WithCancel(ctx)
-		// Se reengancha cuando el hub cambia en cualquiera de sus partes: el
-		// latido renueva el JWT, pero también puede corregir la URL (pasó: un
+		// Se reengancha cuando el latido cambia la URL o el tema (pasó: un
 		// servidor de dev mal configurado repartió «http://localhost» y el
-		// agente se quedó clavado en ella para siempre, porque el JWT —que es
-		// del tópico, no de la URL— nunca cambiaba).
+		// agente se quedó clavado en ella para siempre). El JWT no: se renueva
+		// en cada latido, y Listen lo pide fresco en cada conexión.
 		go func(antes config.Mercure) {
 			for sleep(sub, jwtCheckEvery) {
-				if r.mercure() != antes {
+				if ahora := r.mercure(); ahora.URL != antes.URL || ahora.Topic != antes.Topic {
 					cancel()
 					return
 				}
 			}
 		}(m)
-		wake.Listen(sub, m.URL, m.Topic, m.JWT,
+		wake.Listen(sub, m.URL, m.Topic, func() string { return r.mercure().JWT },
 			func() { r.kickFetch(true) },
 			func(up bool) {
 				r.sseUp.Store(up)
 				r.hubState(up)
 			},
+			r.kickBeat,
 		)
 		cancel()
 	}

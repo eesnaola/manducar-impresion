@@ -46,6 +46,7 @@ func (c *Client) Pair(ctx context.Context, code, name string, systemPrinters []s
 	var out PairResponse
 	err := c.post(ctx, "/agente/vincular", map[string]any{
 		"code": code, "name": name, "platform": Platform(), "version": c.version, "systemPrinters": systemPrinters,
+		"mercureV1": true,
 	}, &out)
 	if err != nil {
 		return out, err
@@ -54,8 +55,12 @@ func (c *Client) Pair(ctx context.Context, code, name string, systemPrinters []s
 }
 
 // Heartbeat: systemPrinters nil = no mandar la lista en este latido.
+//
+// mercureV1 le dice al servidor que este agente se suscribe al hub con el
+// protocolo v1 (`match=`): sin eso, el JWT que devuelve es el de 0.x, que
+// sirve sólo con `topic=`.
 func (c *Client) Heartbeat(ctx context.Context, systemPrinters []string) (HeartbeatResponse, error) {
-	body := map[string]any{"version": c.version}
+	body := map[string]any{"version": c.version, "mercureV1": true}
 	if systemPrinters != nil {
 		body["systemPrinters"] = systemPrinters
 	}

@@ -1679,3 +1679,81 @@ func TestPreguntarEnUnaDeRedSoloVaAPuertosDeImpresora(t *testing.T) {
 		}
 	}
 }
+
+// El JWT del hub que quedó en el disco es el de la vinculación: puede estar
+// vencido (el de Mercure v1 dura una hora) o no valer más. No se usa; el SSE
+// espera el del primer latido.
+func TestTheHubJWTFromDiskIsNotUsed(t *testing.T) {
+	ob, err := outbox.Open(filepath.Join(t.TempDir(), "impresion-outbox.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := newRunner(config.Config{Server: "http://x", Token: "tok", Mercure: config.Mercure{URL: "http://hub", JWT: "del-disco", Topic: "printing/agent/1"}}, ob, "test")
+	if m := r.mercure(); m.JWT != "" || m.URL != "http://hub" {
+		t.Fatalf("al arrancar quedó %+v: el JWT del disco no se usa, la URL sí se conserva", m)
+	}
+}
+
+// El hub rechaza el JWT: se pide un latido en el acto (no a los 30 s), y la
+// reconexión sale con el que trae ése. Y el servidor se entera de que este
+// agente habla Mercure v1, que es lo que decide qué JWT le da.
+func TestARejectedHubJWTAsksForAHeartbeatAndReconnectsWithItsToken(t *testing.T) {
+	t.Setenv("MANDUCAR_IMPRESION_CONFIG", filepath.Join(t.TempDir(), "impresion.json"))
+	conectado := make(chan string, 10)
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("match") != "printing/agent/1" || r.Header.Get("Authorization") != "Bearer jwt-2" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		conectado <- r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer hub.Close()
+
+	var mu sync.Mutex
+	latidos := 0
+	sinV1 := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/agente/latido" {
+			_, _ = w.Write([]byte(`{"jobs":[]}`))
+			return
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		latidos++
+		n := latidos
+		if body["mercureV1"] != true {
+			sinV1 = true
+		}
+		mu.Unlock()
+		// El primero trae uno que el hub no acepta; el segundo, el bueno.
+		fmt.Fprintf(w, `{"mercure":{"url":%q,"jwt":"jwt-%d","topic":"printing/agent/1"},"agent":null,"jobsPending":0,"heartbeatSeconds":30}`, hub.URL, n)
+	}))
+	defer srv.Close()
+
+	r := testRunner(t, srv.URL)
+	r.caidaInformada.Store(true)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go r.heartbeatLoop(ctx)
+	go r.sseLoop(ctx)
+
+	select {
+	case got := <-conectado:
+		if got != "Bearer jwt-2" {
+			t.Fatalf("conectó con %q", got)
+		}
+	case <-time.After(3 * time.Second):
+		mu.Lock()
+		defer mu.Unlock()
+		t.Fatalf("no se reconectó con el JWT del latido siguiente (latidos: %d): el rechazo no pidió latido", latidos)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if sinV1 {
+		t.Fatal("el latido tiene que avisar mercureV1")
+	}
+}

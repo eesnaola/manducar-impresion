@@ -6,6 +6,7 @@ package wake
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -34,12 +35,18 @@ var client = &http.Client{}
 
 // Listen se queda escuchando hasta que ctx termine. Llama onWake() por cada
 // evento con datos y onState(true/false) al conectarse y al caerse.
-func Listen(ctx context.Context, hubURL, topic, jwt string, onWake func(), onState func(connected bool)) {
+//
+// El JWT se pide en cada conexión y no se recibe una vez: el de Mercure v1
+// vence, el latido lo renueva, y el hub corta igual cada diez minutos; una
+// reconexión con el que había al arrancar volvería con uno vencido. Si el hub
+// lo rechaza (401 el token, 403 el tema que no cubre), avisa con onRejected
+// para que el que llama consiga uno nuevo antes del próximo intento.
+func Listen(ctx context.Context, hubURL, topic string, jwt func() string, onWake func(), onState func(connected bool), onRejected func()) {
 	backoff := backoffStart
 	for ctx.Err() == nil {
 		connected := false
 		// connect llama a onState en esta misma goroutine: el flag no corre.
-		err := connect(ctx, hubURL, topic, jwt, onWake, func(up bool) {
+		err := connect(ctx, hubURL, topic, jwt(), onWake, func(up bool) {
 			if up {
 				connected = true
 			}
@@ -50,6 +57,10 @@ func Listen(ctx context.Context, hubURL, topic, jwt string, onWake func(), onSta
 		}
 		if err != nil {
 			log.Println("hub:", err)
+		}
+		var he *httpError
+		if errors.As(err, &he) && (he.code == http.StatusUnauthorized || he.code == http.StatusForbidden) {
+			onRejected()
 		}
 		if connected {
 			// Hubo conexión buena: la próxima caída se reintenta enseguida.
@@ -77,8 +88,10 @@ func connect(ctx context.Context, hubURL, topic, jwt string, onWake func(), onSt
 	if err != nil {
 		return err
 	}
+	// `match` es la suscripción de Mercure v1 (exacta, por omisión). El
+	// `topic` de 0.x lo acepta sólo el modo compatibilidad del hub.
 	q := u.Query()
-	q.Set("topic", topic)
+	q.Set("match", topic)
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
@@ -129,4 +142,12 @@ func connect(ctx context.Context, hubURL, topic, jwt string, onWake func(), onSt
 
 type httpError struct{ code int }
 
-func (e *httpError) Error() string { return "contestó HTTP " + http.StatusText(e.code) }
+func (e *httpError) Error() string {
+	switch e.code {
+	case http.StatusUnauthorized:
+		return "contestó HTTP Unauthorized: no aceptó el token"
+	case http.StatusForbidden:
+		return "contestó HTTP Forbidden: el token no alcanza para el tema"
+	}
+	return "contestó HTTP " + http.StatusText(e.code)
+}
