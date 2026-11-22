@@ -133,6 +133,10 @@ func motivoDeRedEn(goos string, err error) string {
 		return "macOS no dejó llegar a esa dirección. En esa Mac, en Configuración del Sistema → Privacidad y seguridad → Red local, prendé «manducar-impresion»; si no figura o ya está prendido, revisá que la impresora esté en la misma red"
 	case strings.Contains(msg, "no route to host"), strings.Contains(msg, "network is unreachable"):
 		return "no hay camino hasta esa dirección (¿está en la misma red?)"
+	case strings.Contains(msg, "host is down"):
+		// Lo que da macOS cuando nadie contesta en esa dirección de su misma
+		// red: es lo mismo que el plazo vencido, dicho al instante.
+		return "no responde (¿está apagada o en otra red?)"
 	case strings.Contains(msg, "no such host"):
 		return "no se encontró ese nombre en la red"
 	}

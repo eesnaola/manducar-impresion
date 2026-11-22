@@ -84,7 +84,10 @@ func TestMotivoDeRedHablaEnCristiano(t *testing.T) {
 		"dial tcp 192.168.0.50:9100: connect: connection refused": "rechazó la conexión (¿está apagada, o no es el puerto 9100?)",
 		"dial tcp 192.168.0.50:9100: connect: no route to host":   "no hay camino hasta esa dirección (¿está en la misma red?)",
 		"dial tcp: lookup cocina: no such host":                   "no se encontró ese nombre en la red",
-		"algo raro":                                               "algo raro",
+		// macOS, cuando nadie contesta en esa dirección de la propia red: el
+		// primer intento vence el plazo y los siguientes dan esto al instante.
+		"dial tcp 192.168.0.50:9100: connect: host is down": "no responde (¿está apagada o en otra red?)",
+		"algo raro": "algo raro",
 	}
 	for crudo, esperado := range casos {
 		if got := motivoDeRedEn("windows", errors.New(crudo)); got != esperado {
