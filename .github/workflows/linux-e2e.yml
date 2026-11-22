@@ -1,0 +1,85 @@
+# El binario de verdad en un Linux de verdad —amd64, con systemd—: vincular,
+# instalar como unidad del usuario, imprimir por red y por CUPS, caerse,
+# actualizarse solo y desinstalar. Es lo único que ve andar en Linux lo que
+# acá se programó sin una PC con Linux a mano.
+#
+# En una Mac no se puede probar: un contenedor no tiene systemd de PID 1, y el
+# binario amd64 emulado con QEMU se cae en el runtime de Go apenas espera a un
+# proceso hijo. El test está en e2e_linux_test.go.
+#
+# A mano (Actions → linux-e2e → Run workflow) se le puede pedir que pruebe el
+# binario PUBLICADO de un release en vez del compilado acá: el archivo exacto
+# que se baja un local.
+name: linux-e2e
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Probar el binario publicado de este release (p. ej. v0.1.11); vacío, el compilado acá'
+        required: false
+        default: ''
+jobs:
+  agente:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        # Pinneada como en release.yml: mismo compilador siempre.
+        with: { go-version: '1.23.x', check-latest: false }
+      - name: CUPS, con una cola cruda que apunta a un puerto de esta máquina
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cups cups-client cups-bsd cups-ipp-utils
+          sudo systemctl start cups
+          # Cruda (-m raw), como se carga una térmica: lo que entra por
+          # `lp -o raw` tiene que salir tal cual por el socket. El test
+          # escucha en ese puerto y compara los bytes.
+          sudo lpadmin -p ManducarE2E -E -v socket://127.0.0.1:9101 -m raw
+          lpstat -e
+      - name: La sesión de systemd del usuario
+        run: |
+          # El runner no entra por una sesión con escritorio: sin esto no hay
+          # gestor de usuario al que pedirle que instale nada.
+          sudo loginctl enable-linger "$USER"
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          for i in $(seq 1 30); do
+            systemctl --user show-environment >/dev/null 2>&1 && break
+            sleep 1
+          done
+          systemctl --user show-environment >/dev/null
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus" >> "$GITHUB_ENV"
+      - name: Los binarios, el que se prueba y el que hace de versión nueva
+        env:
+          RELEASE: ${{ inputs.release }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/e2e"
+          if [ -n "$RELEASE" ]; then
+            gh release download "$RELEASE" --repo "$GITHUB_REPOSITORY" \
+              --pattern manducar-impresion-linux-amd64 --pattern SHA256SUMS --dir "$RUNNER_TEMP/e2e"
+            (cd "$RUNNER_TEMP/e2e" && grep ' manducar-impresion-linux-amd64$' SHA256SUMS | sha256sum -c -)
+            mv "$RUNNER_TEMP/e2e/manducar-impresion-linux-amd64" "$RUNNER_TEMP/e2e/agente"
+            chmod +x "$RUNNER_TEMP/e2e/agente"
+          else
+            CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.Version=0.0.1-e2e" -o "$RUNNER_TEMP/e2e/agente" .
+          fi
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.Version=99.0.0-e2e" -o "$RUNNER_TEMP/e2e/agente-nuevo" .
+          echo "se prueba la $("$RUNNER_TEMP/e2e/agente" version), que se actualiza a la $("$RUNNER_TEMP/e2e/agente-nuevo" version)"
+      - name: E2E
+        env:
+          MANDUCAR_E2E_SYSTEMD: '1'
+          MANDUCAR_E2E_COLA: ManducarE2E
+          MANDUCAR_E2E_COLA_PUERTO: '9101'
+          MANDUCAR_E2E_AGENTE: ${{ runner.temp }}/e2e/agente
+          MANDUCAR_E2E_AGENTE_NUEVO: ${{ runner.temp }}/e2e/agente-nuevo
+        run: go test -tags linuxe2e -run 'TestE2ELinux' -v -timeout 10m .
+      - name: La unidad, el diario y las colas, si algo falló
+        if: failure()
+        run: |
+          systemctl --user status manducar-impresion --no-pager || true
+          journalctl --user -u manducar-impresion --no-pager -n 80 || true
+          cat ~/.config/systemd/user/manducar-impresion.service || true
+          tail -n 80 ~/.config/manducar/impresion.log || true
+          lpstat -t || true
