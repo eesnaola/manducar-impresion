@@ -680,7 +680,13 @@ func (r *runner) print(jobCtx context.Context, j api.Job) {
 	res := api.Result{OK: out.OK, WroteSomething: out.WroteSomething, Canceled: out.Canceled}
 	if out.Err != nil {
 		res.Error = out.Err.Error()
-		log.Printf("✗ trabajo %d: %v", j.ID, out.Err)
+		if out.Crudo != "" {
+			// Al panel va el mensaje traducido; acá queda además lo que dijo
+			// el sistema, que es lo que distingue una causa de otra.
+			log.Printf("✗ trabajo %d: %v [%s]", j.ID, out.Err, out.Crudo)
+		} else {
+			log.Printf("✗ trabajo %d: %v", j.ID, out.Err)
+		}
 	} else {
 		log.Printf("✓ trabajo %d salió", j.ID)
 	}

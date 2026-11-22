@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"runtime"
 	"strings"
 	"time"
 
@@ -29,6 +30,10 @@ type Outcome struct {
 	OK             bool
 	WroteSomething bool
 	Err            error
+	// Crudo: lo que dijo el sistema, sin traducir. Err es para el panel del
+	// local; esto va al log, que es donde mira el que tiene que averiguar
+	// por qué («connect: no route to host» no es lo mismo que un plazo).
+	Crudo string
 	// SpoolID: cuando el trabajo quedó trabado en la cola del sistema, con
 	// qué nombre buscarlo ahí (el request id de CUPS, el documento en
 	// Windows). Es lo que permite avisar después «al final salió».
@@ -88,7 +93,7 @@ func writeNetwork(ctx context.Context, address string, payload []byte) Outcome {
 	d := net.Dialer{Timeout: dialTimeout}
 	conn, err := d.DialContext(ctx, "tcp", address)
 	if err != nil {
-		return Outcome{Err: fmt.Errorf("no se pudo conectar a %s: %s", address, motivoDeRed(err))}
+		return Outcome{Err: fmt.Errorf("no se pudo conectar a %s: %s", address, motivoDeRed(err)), Crudo: err.Error()}
 	}
 	defer conn.Close()
 	_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
@@ -107,7 +112,15 @@ func writeNetwork(ctx context.Context, address string, payload []byte) Outcome {
 // motivoDeRed traduce el error de conexión a lo que la persona puede hacer:
 // el texto crudo («dial tcp 192.168.0.50:9100: connect: connection refused»)
 // termina en el panel del local, y ahí nadie sabe qué es un dial.
-func motivoDeRed(err error) string {
+func motivoDeRed(err error) string { return motivoDeRedEn(runtime.GOOS, err) }
+
+// motivoDeRedEn es motivoDeRed para ese sistema operativo, que es lo que
+// cambia el consejo: en una Mac, «no route to host» contra una impresora que
+// está en la misma red casi nunca es la red. macOS 15 le pide permiso a cada
+// programa para hablar con los aparatos de la red («Red local»), y cuando no
+// lo tiene le contesta eso mismo, al instante. A un agente de launchd el
+// permiso le aplica (Apple TN3179).
+func motivoDeRedEn(goos string, err error) string {
 	var ne net.Error
 	if errors.As(err, &ne) && ne.Timeout() {
 		return "no responde (¿está apagada o en otra red?)"
@@ -116,6 +129,8 @@ func motivoDeRed(err error) string {
 	switch {
 	case strings.Contains(msg, "connection refused"):
 		return "rechazó la conexión (¿está apagada, o no es el puerto 9100?)"
+	case goos == "darwin" && strings.Contains(msg, "no route to host"):
+		return "macOS no dejó llegar a esa dirección. En esa Mac, en Configuración del Sistema → Privacidad y seguridad → Red local, prendé «manducar-impresion»; si no figura o ya está prendido, revisá que la impresora esté en la misma red"
 	case strings.Contains(msg, "no route to host"), strings.Contains(msg, "network is unreachable"):
 		return "no hay camino hasta esa dirección (¿está en la misma red?)"
 	case strings.Contains(msg, "no such host"):

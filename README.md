@@ -116,6 +116,12 @@ sistema avisa. Es esperable, no es un virus.
   modos»** (pide la contraseña); después abrilo de nuevo y de ahí en adelante
   el doble clic anda. (Equivalente en la terminal:
   `xattr -dr com.apple.quarantine "Manducar Impresión.app"`.)
+- **Mac, con impresoras de red**: macOS le pide permiso a cada programa para
+  hablar con los aparatos de la red. Si pregunta si «manducar-impresion» puede
+  buscar dispositivos en la red local, tocá **«Permitir»**. Si una impresora
+  cargada por IP da «macOS no dejó llegar a esa dirección», es ese permiso: en
+  **Privacidad y seguridad → Red local** tiene que estar prendido
+  «manducar-impresion».
 - **Linux**: `chmod +x manducar-impresion` y abrilo desde una terminal.
 
 ## Volver a vincular
