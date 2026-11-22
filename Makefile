@@ -11,7 +11,8 @@ build:
 	@mkdir -p dist
 	@for t in $(TARGETS); do \
 	  os=$${t%-*}; arch=$${t#*-}; ext=""; [ "$$os" = windows ] && ext=".exe"; \
-	  CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "-s -w -X main.Version=$(VERSION)" -o dist/manducar-impresion-$$t$$ext . ; \
+	  uuid=""; [ "$$os" = darwin ] && uuid="-B gobuildid"; \
+	  CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "-s -w $$uuid -X main.Version=$(VERSION)" -o dist/manducar-impresion-$$t$$ext . ; \
 	done
 	@packaging/mac/armar-app.sh dist/manducar-impresion-darwin-arm64 $(VERSION) dist/manducar-impresion-mac.zip
 	@cd dist && shasum -a 256 manducar-impresion-* > SHA256SUMS

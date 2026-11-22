@@ -17,3 +17,15 @@ jobs:
       # El agente corre sobre todo en Windows y acá no se compila nunca:
       # vet cruzado para que un `//go:build windows` roto no llegue al release.
       - run: GOOS=windows GOARCH=amd64 go vet ./...
+
+  # El .app de Mac va sellado con codesign, que sólo existe en Mac: en el job
+  # de arriba ese test se saltea. Acá se arma el zip en cada push y se le
+  # pregunta a macOS si el paquete cierra, para que uno que diga «está dañado»
+  # no llegue a un release.
+  mac-app:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.23.x', check-latest: false }
+      - run: go test -count=1 -v ./packaging/mac/

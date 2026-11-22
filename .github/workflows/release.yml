@@ -2,10 +2,11 @@ name: release
 on:
   push:
     tags: ['v*']
+env:
+  TARGETS: windows-amd64 darwin-arm64 linux-amd64
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions: { contents: write }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -20,20 +21,52 @@ jobs:
         run: |
           set -e
           V=${GITHUB_REF_NAME#v}
-          REPO="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
-          TARGETS="windows-amd64 darwin-arm64 linux-amd64"
           mkdir -p dist
           for t in $TARGETS; do
             os=${t%-*}; arch=${t#*-}; ext=""; [ "$os" = windows ] && ext=".exe"
-            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w -X main.Version=$V" -o dist/manducar-impresion-$t$ext .
+            # En Mac, con el LC_UUID: Go 1.23 no lo pone solo, y macOS 15 lo
+            # usa para el permiso de «Red local». Sin él el agente puede
+            # quedarse sin llegar a las impresoras de red (golang/go#68678).
+            # armar-app.sh no empaqueta un binario que no lo traiga.
+            uuid=""; [ "$os" = darwin ] && uuid="-B gobuildid"
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w $uuid -X main.Version=$V" -o dist/manducar-impresion-$t$ext .
           done
-          # Mac: además del binario crudo (que es lo que baja el agente para
-          # actualizarse, con su sha256), un .zip para el humano con el mismo
-          # binario adentro de «Manducar Impresión.app»: el navegador le saca
-          # el permiso de ejecución a un binario suelto, el zip lo conserva, y
-          # con el .app el doble clic no abre la Terminal sino el cuadro que
-          # pide el código.
-          packaging/mac/armar-app.sh dist/manducar-impresion-darwin-arm64 "$V" dist/manducar-impresion-mac.zip
+      - uses: actions/upload-artifact@v4
+        with: { name: binarios, path: dist/, if-no-files-found: error }
+
+  # Mac: además del binario crudo (que es lo que baja el agente para
+  # actualizarse, con su sha256), un .zip para el humano con el mismo binario
+  # adentro de «Manducar Impresión.app»: el navegador le saca el permiso de
+  # ejecución a un binario suelto, el zip lo conserva, y con el .app el doble
+  # clic no abre la Terminal sino el cuadro que pide el código.
+  #
+  # Se arma en una Mac porque el .app va sellado con codesign. Armado en
+  # Linux salía sin sellar, y a quien lo bajaba macOS le decía «está dañado y
+  # no puede abrirse». El script revisa el sello en lo que sale del zip: si no
+  # cierra, este job falla y no se publica nada.
+  mac-app:
+    needs: build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: binarios, path: dist }
+      - run: packaging/mac/armar-app.sh dist/manducar-impresion-darwin-arm64 "${GITHUB_REF_NAME#v}" dist/manducar-impresion-mac.zip
+      - uses: actions/upload-artifact@v4
+        with: { name: mac-app, path: dist/manducar-impresion-mac.zip, if-no-files-found: error }
+
+  release:
+    needs: [build, mac-app]
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - name: notas
+        run: |
+          set -e
+          V=${GITHUB_REF_NAME#v}
+          REPO="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
           (cd dist && sha256sum manducar-impresion-* > SHA256SUMS)
           # La entrada del catálogo de printing.yaml sale de acá, de los
           # binarios que se publican, y va en el cuerpo del release: los
