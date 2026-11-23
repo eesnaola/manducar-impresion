@@ -32,6 +32,10 @@ type HeartbeatResponse struct {
 	// Printers: las impresoras a cargo de esta computadora, para pulsarlas
 	// y contarle al servidor cómo están (el semáforo del panel).
 	Printers []PrinterRef `json:"printers"`
+	// FiscalPending: cuántos pedidos fiscales esperan a esta computadora. nil
+	// es un servidor de antes de lo fiscal, que no tiene esas rutas: a ése no
+	// se le pregunta.
+	FiscalPending *int `json:"fiscalPending"`
 }
 
 // PrinterRef es una impresora del panel: su id y su target.

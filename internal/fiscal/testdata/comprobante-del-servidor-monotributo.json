@@ -1,0 +1,19 @@
+{
+    "tique_de_monotributista": {
+        "tipo": "tique",
+        "cuit": "30712345679",
+        "total": "20000.00",
+        "items": [
+            {
+                "descripcion": "Pizza muzzarella",
+                "cantidad": "2",
+                "precio": "8500.00"
+            },
+            {
+                "descripcion": "Gaseosa 1,5 l",
+                "cantidad": "1",
+                "precio": "3000.00"
+            }
+        ]
+    }
+}

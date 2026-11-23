@@ -60,12 +60,41 @@ func (c *Client) Pair(ctx context.Context, code, name string, systemPrinters []s
 // protocolo v1 (`match=`): sin eso, el JWT que devuelve es el de 0.x, que
 // sirve sólo con `topic=`.
 func (c *Client) Heartbeat(ctx context.Context, systemPrinters []string) (HeartbeatResponse, error) {
+	return c.Latir(ctx, systemPrinters, nil)
+}
+
+// Latir es Heartbeat que además cuenta qué controladores fiscales puede
+// manejar esta computadora (lo que devuelve fiscal.Detectar). Va como `any`
+// para que este paquete no dependa del fiscal. nil = no mandarlo en este
+// latido, igual que la lista de impresoras.
+func (c *Client) Latir(ctx context.Context, systemPrinters []string, fiscal any) (HeartbeatResponse, error) {
 	body := map[string]any{"version": c.version, "mercureV1": true}
 	if systemPrinters != nil {
 		body["systemPrinters"] = systemPrinters
 	}
+	if fiscal != nil {
+		body["fiscal"] = fiscal
+	}
 	var out HeartbeatResponse
 	return out, c.post(ctx, "/agente/latido", body, &out)
+}
+
+// FetchFiscal trae los pedidos fiscales para esta computadora: lo que el
+// servidor quiere que se le pregunte o se le mande a un controlador fiscal.
+// salida es un puntero a la forma del sobre ({"pedidos": [...]}).
+func (c *Client) FetchFiscal(ctx context.Context, salida any) error {
+	return c.post(ctx, "/agente/fiscal/pedidos", map[string]any{}, salida)
+}
+
+// ReportFiscal devuelve el resultado de un pedido fiscal.
+func (c *Client) ReportFiscal(ctx context.Context, id int, resultado any) error {
+	return c.post(ctx, fmt.Sprintf("/agente/fiscal/pedidos/%d/resultado", id), resultado, nil)
+}
+
+// ReportFiscalSearch devuelve lo que encontró una búsqueda de controladores
+// fiscales en la red.
+func (c *Client) ReportFiscalSearch(ctx context.Context, resultado any) error {
+	return c.post(ctx, "/agente/fiscal/busqueda", resultado, nil)
 }
 
 func (c *Client) FetchJobs(ctx context.Context) ([]Job, error) {
@@ -123,7 +152,7 @@ func (c *Client) post(ctx context.Context, path string, body any, out any) error
 	case res.StatusCode == http.StatusUnauthorized:
 		return ErrUnauthorized
 	case res.StatusCode == http.StatusNotFound:
-		if strings.HasPrefix(path, "/agente/trabajos/") {
+		if strings.HasPrefix(path, "/agente/trabajos/") || strings.HasPrefix(path, "/agente/fiscal/pedidos/") {
 			return ErrUnknownJob
 		}
 		return fmt.Errorf("%s: %s", path, errorText(data, "no encontrado"))

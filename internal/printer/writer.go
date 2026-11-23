@@ -114,6 +114,10 @@ func writeNetwork(ctx context.Context, address string, payload []byte) Outcome {
 // termina en el panel del local, y ahí nadie sabe qué es un dial.
 func motivoDeRed(err error) string { return motivoDeRedEn(runtime.GOOS, err) }
 
+// MotivoDeRed es motivoDeRed para quien le habla por red a otra cosa que una
+// térmica (el controlador fiscal): el mismo error, dicho igual.
+func MotivoDeRed(err error) string { return motivoDeRed(err) }
+
 // motivoDeRedEn es motivoDeRed para ese sistema operativo, que es lo que
 // cambia el consejo: en una Mac, «no route to host» contra una impresora que
 // está en la misma red casi nunca es la red. macOS 15 le pide permiso a cada

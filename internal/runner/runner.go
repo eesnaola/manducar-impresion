@@ -92,9 +92,12 @@ type runner struct {
 	hubDownTimer  *time.Timer
 	hubEverUp     bool
 	hubDownLogged bool
-	unpaired      atomic.Bool  // el servidor rechazó el token: no hay nada que buscar
-	updating      atomic.Bool  // se está reemplazando el binario: no se traen trabajos nuevos
-	inFlight      atomic.Int64 // trabajos en cola o imprimiéndose
+	unpaired      atomic.Bool   // el servidor rechazó el token: no hay nada que buscar
+	fiscalSi      atomic.Bool   // el servidor sabe de controladores fiscales (dijo cuántos pedidos hay)
+	diario        *diarioFiscal // lo que se le pidió a un controlador fiscal y cómo terminó
+	fiscalOcupado atomic.Bool   // hay una vuelta de pedidos fiscales en curso
+	updating      atomic.Bool   // se está reemplazando el binario: no se traen trabajos nuevos
+	inFlight      atomic.Int64  // trabajos en cola o imprimiéndose
 
 	// Las líneas de error que se repiten (el servidor caído late cada 30 s)
 	// se juntan: una y después una cada logRepeatEvery.
@@ -201,6 +204,10 @@ func Run(ctx context.Context, version string) error {
 	}
 	r := newRunner(cfg, out, version)
 	r.crashDir = filepath.Dir(cfgPath)
+	if r.diario, err = abrirDiarioFiscal(filepath.Join(filepath.Dir(cfgPath), "impresion-fiscal.json")); err != nil {
+		// Sin diario no se emite nada por un controlador fiscal; lo demás sigue.
+		log.Println("no se pudo abrir el diario fiscal:", err)
+	}
 	if err := caida.Preparar(r.crashDir); err != nil {
 		log.Println("no se pudo preparar el archivo de caídas:", err)
 	}
@@ -258,10 +265,14 @@ func (r *runner) heartbeatLoop(ctx context.Context) {
 		// La lista de impresoras del sistema no cambia seguido: va en el
 		// primer latido y después cada 5 minutos.
 		var names []string
+		// Qué controladores fiscales puede manejar esta computadora va con la
+		// lista de impresoras, al mismo ritmo: tampoco cambia seguido.
+		var fiscales any
 		if lastPrinters.IsZero() || time.Since(lastPrinters) >= printersEvery {
 			names = r.systemPrinters(ctx, listTimeout)
+			fiscales = detectarFiscal()
 		}
-		res, err := r.api().Heartbeat(ctx, names)
+		res, err := r.api().Latir(ctx, names, fiscales)
 		switch {
 		case errors.Is(err, api.ErrUnauthorized):
 			// Puede que lo hayan vuelto a vincular recién, con el agente
@@ -307,6 +318,13 @@ func (r *runner) heartbeatLoop(ctx context.Context) {
 			}
 			if res.JobsPending > 0 {
 				r.kickFetch(false)
+			}
+			// Lo fiscal: sólo si el servidor dijo tener esas rutas.
+			if res.FiscalPending != nil {
+				r.fiscalSi.Store(true)
+				if *res.FiscalPending > 0 || r.fiscalSinEntregar() {
+					r.kickFiscal(ctx)
+				}
 			}
 			// El semáforo: pulsar las impresoras que el servidor dice que son
 			// de esta computadora, y contarle cómo están. En su goroutine: el
@@ -530,6 +548,11 @@ func (r *runner) fetch(ctx, jobCtx context.Context, woken bool) {
 		// imprimiría a medias y el reinicio lo cortaría.
 		if r.unpaired.Load() || r.updating.Load() {
 			return
+		}
+		// El aviso del hub es uno solo para todo lo que espera a esta
+		// computadora: si despertó, puede ser un pedido fiscal.
+		if woken {
+			r.kickFiscal(ctx)
 		}
 		jobs, err := r.api().FetchJobs(ctx)
 		if err != nil {

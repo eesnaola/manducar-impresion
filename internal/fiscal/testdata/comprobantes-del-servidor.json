@@ -1,0 +1,151 @@
+{
+    "tique": {
+        "tipo": "tique",
+        "cuit": "30712345679",
+        "total": "20000.00",
+        "items": [
+            {
+                "descripcion": "Pizza muzzarella",
+                "cantidad": "2",
+                "precio": "8500.00",
+                "iva": "21.00"
+            },
+            {
+                "descripcion": "Gaseosa 1,5 l",
+                "cantidad": "1",
+                "precio": "3000.00",
+                "iva": "21.00"
+            }
+        ]
+    },
+    "factura_b": {
+        "tipo": "factura",
+        "letra": "B",
+        "cuit": "30712345679",
+        "total": "20000.00",
+        "cliente": {
+            "nombre": "Ana Pérez",
+            "documento": "32964233",
+            "tipoDocumento": "dni",
+            "responsabilidad": "consumidor_final",
+            "domicilio": "Mitre 123"
+        },
+        "items": [
+            {
+                "descripcion": "Pizza muzzarella",
+                "cantidad": "2",
+                "precio": "8500.00",
+                "iva": "21.00"
+            },
+            {
+                "descripcion": "Gaseosa 1,5 l",
+                "cantidad": "1",
+                "precio": "3000.00",
+                "iva": "21.00"
+            }
+        ]
+    },
+    "factura_a": {
+        "tipo": "factura",
+        "letra": "A",
+        "cuit": "30712345679",
+        "total": "20000.00",
+        "cliente": {
+            "nombre": "ELSIS SRL",
+            "documento": "30222222226",
+            "tipoDocumento": "cuit",
+            "responsabilidad": "responsable_inscripto"
+        },
+        "items": [
+            {
+                "descripcion": "Pizza muzzarella",
+                "cantidad": "2",
+                "precio": "8500.00",
+                "iva": "21.00"
+            },
+            {
+                "descripcion": "Gaseosa 1,5 l",
+                "cantidad": "1",
+                "precio": "3000.00",
+                "iva": "21.00"
+            }
+        ]
+    },
+    "tique_con_envio_y_descuento": {
+        "tipo": "tique",
+        "cuit": "30712345679",
+        "total": "19500.00",
+        "items": [
+            {
+                "descripcion": "Pizza muzzarella",
+                "cantidad": "2",
+                "precio": "8500.00",
+                "iva": "21.00"
+            },
+            {
+                "descripcion": "Gaseosa 1,5 l",
+                "cantidad": "1",
+                "precio": "3000.00",
+                "iva": "21.00"
+            },
+            {
+                "descripcion": "Envío",
+                "cantidad": "1",
+                "precio": "1500.00",
+                "iva": "21.00"
+            }
+        ],
+        "ajustes": [
+            {
+                "descripcion": "Descuento",
+                "monto": "2000.00"
+            }
+        ]
+    },
+    "nota_de_credito_de_un_tique": {
+        "tipo": "nota_credito",
+        "cuit": "30712345679",
+        "total": "20000.00",
+        "asociado": {
+            "tipo": "tique",
+            "puntoDeVenta": 7,
+            "numero": 345,
+            "fecha": "2026-11-22"
+        },
+        "items": [
+            {
+                "descripcion": "Anulación Tique 0007-00000345",
+                "cantidad": "1",
+                "precio": "20000.00",
+                "iva": "21.00"
+            }
+        ]
+    },
+    "nota_de_credito_de_una_factura_a": {
+        "tipo": "nota_credito",
+        "letra": "A",
+        "cuit": "30712345679",
+        "total": "20000.00",
+        "cliente": {
+            "nombre": "ELSIS SRL",
+            "documento": "30222222226",
+            "tipoDocumento": "cuit",
+            "responsabilidad": "responsable_inscripto"
+        },
+        "asociado": {
+            "tipo": "factura",
+            "letra": "A",
+            "puntoDeVenta": 7,
+            "numero": 12,
+            "fecha": "2026-11-22"
+        },
+        "items": [
+            {
+                "descripcion": "Anulación A 0007-00000012",
+                "cantidad": "1",
+                "precio": "20000.00",
+                "iva": "21.00"
+            }
+        ]
+    }
+}
