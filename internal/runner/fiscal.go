@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"time"
 
 	"github.com/eesnaola/manducar-impresion/internal/api"
@@ -141,7 +142,16 @@ func (r *runner) atenderFiscales(ctx context.Context) {
 // vuelve a buscar.
 func (r *runner) buscarFiscales(ctx context.Context, id string) {
 	busqueda, cancelar := context.WithTimeout(ctx, plazoDeBusqueda)
-	encontrados := buscarFiscal(busqueda)
+	encontrados := func() (encontrados []fiscal.Encontrado) {
+		// Buscar es una sugerencia: si tropieza, que no encuentre nada.
+		defer func() {
+			if tropiezo := recover(); tropiezo != nil {
+				log.Printf("error interno buscando impresoras fiscales: %v\n%s", tropiezo, debug.Stack())
+				encontrados = nil
+			}
+		}()
+		return buscarFiscal(busqueda)
+	}()
 	cancelar()
 	if encontrados == nil {
 		// Una lista vacía y no null: «no encontró nada» es una respuesta.
@@ -220,7 +230,21 @@ func (r *runner) fiscalSinEntregar() bool {
 
 // resolverFiscal hace lo que pide un pedido y arma su resultado. Nunca deja
 // un pedido sin respuesta: lo que no se puede, vuelve con el motivo.
-func (r *runner) resolverFiscal(ctx context.Context, p pedidoFiscal) resultadoFiscal {
+func (r *runner) resolverFiscal(ctx context.Context, p pedidoFiscal) (res resultadoFiscal) {
+	// Un tropiezo acá adentro —un error de programación en un driver— no
+	// puede dejar al local sin agente: por este mismo programa salen las
+	// comandas. El pedido vuelve con el error; y si se le estaba dictando
+	// algo que no se deshace, no se sabe hasta dónde llegó.
+	defer func() {
+		if tropiezo := recover(); tropiezo != nil {
+			log.Printf("✗ fiscal %d: error interno atendiendo «%s»: %v\n%s", p.ID, p.Accion, tropiezo, debug.Stack())
+			res = resultadoFiscal{Error: "hubo un error interno del agente al hablarle a la impresora fiscal"}
+			if noSeDeshace(p.Accion) {
+				res.Incierto = true
+				res.Error += ", y no se sabe si salió. Mirá el papel antes de volver a pedirlo"
+			}
+		}
+	}()
 	plazo := plazoFiscal
 	if noSeDeshace(p.Accion) {
 		plazo = plazoDeEmision

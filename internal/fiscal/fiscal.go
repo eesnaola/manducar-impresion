@@ -27,6 +27,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -93,6 +95,37 @@ func Abrir(c Controlador) (Driver, error) {
 		return nuevoEpson(c)
 	}
 	return nil, fmt.Errorf("no sé manejar un controlador fiscal de la marca %q", c.Marca)
+}
+
+// esEquipoDeRed: un nombre o una IP (la v6, entre corchetes), con su puerto
+// si hace falta. Nada más.
+var esEquipoDeRed = regexp.MustCompile(`^([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(:([0-9]{1,5}))?$`)
+
+// direccionDeRed deja la dirección de un equipo como se usa —«192.168.1.50»,
+// «caja.local:8080»—, la haya escrito el local como la haya escrito, o dice
+// que eso no es una dirección.
+//
+// El servidor ya la valida al cargarla, pero es el agente el que le manda
+// ahí los comandos y la clave de acceso: no confía en que llegue bien. Sólo
+// un equipo y un puerto; ni un camino, ni un usuario, ni una consulta, que
+// harían que el pedido fuera a parar a otro lado.
+func direccionDeRed(escrita string) (string, error) {
+	d := strings.TrimSpace(escrita)
+	d = strings.TrimPrefix(strings.TrimPrefix(d, "http://"), "https://")
+	d = strings.TrimRight(d, "/")
+	if d == "" {
+		return "", errors.New("falta la dirección de la impresora fiscal en la red (por ejemplo 192.168.1.50)")
+	}
+	partes := esEquipoDeRed.FindStringSubmatch(d)
+	if partes == nil {
+		return "", fmt.Errorf("%q no es la dirección de un equipo de la red: va su IP o su nombre, y el puerto si hace falta (por ejemplo 192.168.1.50)", recortar(d, 60))
+	}
+	if puerto := partes[4]; puerto != "" {
+		if n, _ := strconv.Atoi(puerto); n < 1 || n > 65535 {
+			return "", fmt.Errorf("en la dirección de la impresora fiscal, %s no es un puerto", puerto)
+		}
+	}
+	return d, nil
 }
 
 // Capacidades es qué controladores fiscales puede manejar esta computadora.

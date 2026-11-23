@@ -27,6 +27,8 @@ type equipoFalso struct {
 	emitidos  []fiscal.Comprobante
 	cierres   []string
 	errEmitir error
+	// tropezarEn: con un comprobante de esa letra, el driver rompe (un error de programación).
+	tropezarEn string
 }
 
 func (e *equipoFalso) Info(context.Context) (fiscal.Equipo, error) { return fiscal.Equipo{}, nil }
@@ -34,6 +36,10 @@ func (e *equipoFalso) Info(context.Context) (fiscal.Equipo, error) { return fisc
 func (e *equipoFalso) Emitir(_ context.Context, c fiscal.Comprobante) (fiscal.Emitido, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.tropezarEn != "" && c.Letra == e.tropezarEn {
+		var nada []string
+		_ = nada[3] // un error de programación adentro del driver
+	}
 	e.emitidos = append(e.emitidos, c)
 	if e.errEmitir != nil {
 		return fiscal.Emitido{}, e.errEmitir
@@ -268,5 +274,34 @@ func TestElCierreZVuelveConLoQueInformoElEquipo(t *testing.T) {
 	}
 	if len(equipo.cierres) != 1 || equipo.cierres[0] != "Z" {
 		t.Errorf("al equipo le llegó %v", equipo.cierres)
+	}
+}
+
+// Un tropiezo adentro del manejo de la impresora fiscal no puede dejar al
+// local sin agente: las comandas salen por el mismo programa. El pedido
+// vuelve con el error, y el que venía atrás se atiende.
+func TestUnTropiezoConLaFiscalNoTiraAbajoElAgente(t *testing.T) {
+	equipo := conEquipoFalso(t)
+	equipo.tropezarEn = "ZZ" // el primer comprobante, por su letra, rompe adentro del driver
+	srv := nuevoServidorFiscal(t, `{"pedidos":[
+		{"id":21,"accion":"comprobante","controlador":{"marca":"hasar","conexion":"192.168.1.50"},"comprobante":{"tipo":"factura","letra":"ZZ","items":[{"descripcion":"Pizza","cantidad":"1","precio":"1.00"}]}},
+		{"id":22,"accion":"info","controlador":{"marca":"hasar","conexion":"192.168.1.50"}}
+	]}`)
+	correrContra(t, srv.web.URL)
+
+	waitFor(t, 4*time.Second, "el resultado del pedido que venía atrás", func() bool { _, ok := srv.resultado(22); return ok })
+	roto, llego := srv.resultado(21)
+	if !llego {
+		t.Fatal("el pedido que tropezó quedó sin respuesta")
+	}
+	if roto["ok"] != false || !strings.Contains(fmt.Sprint(roto["error"]), "error interno") {
+		t.Errorf("quiero un no que diga que fue un error interno del agente, vino: %v", roto)
+	}
+	// Se le estaba dictando un comprobante: no se sabe hasta dónde llegó.
+	if roto["incierto"] != true {
+		t.Errorf("un comprobante que tropezó a mitad de camino es incierto: %v", roto)
+	}
+	if siguiente, _ := srv.resultado(22); siguiente["ok"] != true {
+		t.Errorf("el pedido de atrás tenía que atenderse igual: %v", siguiente)
 	}
 }

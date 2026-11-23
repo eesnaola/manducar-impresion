@@ -157,6 +157,10 @@ func (h *hasar) Emitir(ctx context.Context, c Comprobante) (Emitido, error) {
 
 	if a := c.Asociado; a != nil {
 		fecha := fechaISO.FindStringSubmatch(a.Fecha)
+		if fecha == nil {
+			// Validar ya lo frena; acá se vuelve a mirar porque lo que sigue lo da por bueno.
+			return Emitido{}, errors.New("la fecha del comprobante asociado no es una fecha (AAAA-MM-DD)")
+		}
 		err := h.comando(ctx, "CargarDocumentoAsociado", hasarAsociado{
 			NumeroLinea: "1", CodigoComprobante: codigoHasar(a.Tipo, a.Letra),
 			NumeroPos: strconv.Itoa(a.PuntoDeVenta), NumeroComprobante: fmt.Sprintf("%08d", a.Numero),

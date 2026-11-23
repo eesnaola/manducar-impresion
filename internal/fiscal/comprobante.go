@@ -170,6 +170,12 @@ func (c Comprobante) Validar() error {
 	default:
 		return fmt.Errorf("no sé emitir un comprobante de tipo %q", c.Tipo)
 	}
+	// El comprobante asociado es el que anula una nota de crédito. En
+	// cualquier otro no quiere decir nada, y no se manda al equipo algo que
+	// no se revisó.
+	if c.Tipo != TipoNotaDeCredito && c.Asociado != nil {
+		return errors.New("sólo una nota de crédito lleva un comprobante asociado")
+	}
 	// Con letra es una factura (o su nota de crédito), y una factura dice a
 	// quién: sin cliente lo que corresponde es un tique.
 	if c.Letra != "" && c.Cliente == nil {

@@ -161,8 +161,13 @@ func puertoEpson(conexion string) (string, error) {
 	case strings.HasPrefix(strings.ToUpper(c), "COM"):
 		return "serial:" + strings.ToUpper(c), nil
 	}
-	// Lo demás es una dirección de red (desde el firmware Jano).
-	return "lan:" + c, nil
+	// Lo demás es una dirección de red (desde el firmware Jano): un equipo y
+	// su puerto, y nada más, que es a donde la librería le va a hablar.
+	direccion, err := direccionDeRed(c)
+	if err != nil {
+		return "", err
+	}
+	return "lan:" + direccion, nil
 }
 
 // tasaEpson es el identificador de tasa de IVA de un renglón.

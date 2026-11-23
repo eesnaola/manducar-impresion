@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -65,11 +64,9 @@ func nuevoHasar(c Controlador) (*hasar, error) {
 		}
 		return &hasar{equipo: equipo, hablar: &hasarPuerto{equipo: equipo, conexion: puerto, velocidad: c.Velocidad}}, nil
 	}
-	equipo := strings.TrimSpace(c.Conexion)
-	equipo = strings.TrimPrefix(strings.TrimPrefix(equipo, "http://"), "https://")
-	equipo = strings.TrimRight(equipo, "/")
-	if equipo == "" {
-		return nil, errors.New("falta la dirección de la impresora fiscal en la red (por ejemplo 192.168.1.50)")
+	equipo, err := direccionDeRed(c.Conexion)
+	if err != nil {
+		return nil, err
 	}
 	clave := strings.TrimSpace(c.Clave)
 	if clave == "" {
